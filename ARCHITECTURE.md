@@ -398,3 +398,278 @@ All components emit to Pedregal-native observability:
 - Compute close to data principle
 - Cluster Proxy Service handles routing
 - Failover to available regions on outage
+
+## Multi-Tenant Spark Connect Architecture
+
+This section describes how to provide standardized Spark Connect access for teams like Feature Engineering, ML Platform, and other stakeholders.
+
+### Requirements Summary
+
+| Requirement | Solution |
+|-------------|----------|
+| Static URL access (`sc://team-cluster.doordash.team`) | DNS CNAME → Spark Gateway |
+| No SSH tunneling | Spark Gateway publicly routable with auth |
+| Multi-region (US/EU) | Regional Spark Gateway + clusters |
+| Self-service provisioning | Cluster Request API (like Fabricator) |
+| Unity Catalog access | Cluster templates with catalog config |
+| Environment separation | Namespace per environment (dev/staging/prod) |
+| Backend agnostic | Spark Gateway abstracts DBR/EMR/K8s |
+| ML K8s accessibility | Network policy allowing Metaflow → Gateway |
+
+### Architecture Overview
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                    MULTI-TENANT SPARK CONNECT ARCHITECTURE                        │
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │                           CLIENT LAYER                                       │ │
+│  │                                                                             │ │
+│  │   Jupyter Notebooks    Metaflow Steps     Feature Pipelines    Ad-hoc      │ │
+│  │        │                    │                   │              Queries      │ │
+│  │        │                    │                   │                 │         │ │
+│  │        └────────────────────┴───────────────────┴─────────────────┘         │ │
+│  │                                    │                                         │ │
+│  │                    Spark Connect Client (pyspark[connect])                  │ │
+│  │                    - Thin client library                                     │ │
+│  │                    - No local Spark needed                                   │ │
+│  │                    - Uses sc:// protocol                                     │ │
+│  │                                    │                                         │ │
+│  └────────────────────────────────────┼─────────────────────────────────────────┘ │
+│                                       │                                          │
+│                                       ▼                                          │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │                         DNS / ROUTING LAYER                                  │ │
+│  │                                                                             │ │
+│  │   sc://feature-eng.doordash.team ──┐                                        │ │
+│  │   sc://ml-platform.doordash.team ──┼──▶ CNAME → spark-gateway.doordash.team │ │
+│  │   sc://data-science.doordash.team ─┘                                        │ │
+│  │                                                                             │ │
+│  │   Regional endpoints:                                                        │ │
+│  │   sc://feature-eng-eu.doordash.team → spark-gateway-eu.doordash.team        │ │
+│  │   sc://feature-eng-us.doordash.team → spark-gateway-us.doordash.team        │ │
+│  │                                                                             │ │
+│  └─────────────────────────────────────────────────────────────────────────────┘ │
+│                                       │                                          │
+│                                       ▼                                          │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │                         SPARK GATEWAY (Control Plane)                        │ │
+│  │                                                                             │ │
+│  │   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐       │ │
+│  │   │    Auth     │  │  Cluster    │  │   Routing   │  │    Hot      │       │ │
+│  │   │   (Okta)    │  │  Discovery  │  │   Engine    │  │  Clusters   │       │ │
+│  │   └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘       │ │
+│  │                                                                             │ │
+│  │   Features:                                                                  │ │
+│  │   • Team-based authentication (Okta groups)                                 │ │
+│  │   • Cluster discovery by team/environment                                   │ │
+│  │   • Load balancing across cluster pool                                      │ │
+│  │   • Hot cluster management (pre-warmed)                                     │ │
+│  │   • Automatic failover                                                      │ │
+│  │                                                                             │ │
+│  └─────────────────────────────────────────────────────────────────────────────┘ │
+│                                       │                                          │
+│           ┌───────────────────────────┼───────────────────────────┐              │
+│           │                           │                           │              │
+│           ▼                           ▼                           ▼              │
+│  ┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐        │
+│  │   US-WEST-2     │       │   US-EAST-1     │       │    EU-WEST-1    │        │
+│  │   Cluster Pool  │       │   Cluster Pool  │       │   Cluster Pool  │        │
+│  │                 │       │                 │       │                 │        │
+│  │  ┌───────────┐  │       │  ┌───────────┐  │       │  ┌───────────┐  │        │
+│  │  │  Driver   │  │       │  │  Driver   │  │       │  │  Driver   │  │        │
+│  │  │  + Spark  │  │       │  │  + Spark  │  │       │  │  + Spark  │  │        │
+│  │  │  Connect  │  │       │  │  Connect  │  │       │  │  Connect  │  │        │
+│  │  │  Server   │  │       │  │  Server   │  │       │  │  Server   │  │        │
+│  │  └───────────┘  │       │  └───────────┘  │       │  └───────────┘  │        │
+│  │                 │       │                 │       │                 │        │
+│  │  Backend: SK8   │       │  Backend: SK8   │       │  Backend: EMR   │        │
+│  │  or DBR or EMR  │       │  or DBR or EMR  │       │  or DBR         │        │
+│  └─────────────────┘       └─────────────────┘       └─────────────────┘        │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Cluster Provisioning Model
+
+Teams request clusters through a self-service API (similar to Fabricator):
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                         CLUSTER PROVISIONING FLOW                                 │
+│                                                                                  │
+│   1. Team Request                                                                │
+│   ───────────────                                                                │
+│   POST /api/v1/spark-connect-clusters                                            │
+│   {                                                                              │
+│     "team": "feature-engineering",                                               │
+│     "environment": "prod",                                                       │
+│     "region": "eu-west-1",                                                       │
+│     "size": "medium",           // small/medium/large/xlarge                     │
+│     "catalogs": ["pedregal", "feature_store"],                                   │
+│     "ttl": "7d"                 // or "persistent"                               │
+│   }                                                                              │
+│                                                                                  │
+│   2. Provisioning Service                                                        │
+│   ───────────────────────                                                        │
+│   • Validates team permissions (Okta group membership)                           │
+│   • Creates namespace: sjns-feature-engineering-prod-eu                          │
+│   • Provisions cluster with Unity Catalog config                                 │
+│   • Registers cluster in Spark Gateway                                           │
+│   • Creates DNS record: feature-eng-prod-eu.doordash.team                        │
+│                                                                                  │
+│   3. Response                                                                    │
+│   ──────────                                                                     │
+│   {                                                                              │
+│     "cluster_id": "sc-feat-eng-prod-eu-001",                                     │
+│     "endpoint": "sc://feature-eng-prod-eu.doordash.team",                        │
+│     "status": "provisioning",                                                    │
+│     "catalogs": ["pedregal", "feature_store"],                                   │
+│     "expires_at": "2024-01-15T00:00:00Z"                                         │
+│   }                                                                              │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Environment Separation
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                         ENVIRONMENT NAMESPACES                                    │
+│                                                                                  │
+│   Team: feature-engineering                                                      │
+│                                                                                  │
+│   ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐                 │
+│   │      DEV        │  │    STAGING      │  │      PROD       │                 │
+│   │                 │  │                 │  │                 │                 │
+│   │ Namespace:      │  │ Namespace:      │  │ Namespace:      │                 │
+│   │ sjns-feat-dev   │  │ sjns-feat-stg   │  │ sjns-feat-prod  │                 │
+│   │                 │  │                 │  │                 │                 │
+│   │ Endpoint:       │  │ Endpoint:       │  │ Endpoint:       │                 │
+│   │ sc://feat-eng   │  │ sc://feat-eng   │  │ sc://feat-eng   │                 │
+│   │ -dev.dd.team    │  │ -stg.dd.team    │  │ .doordash.team  │                 │
+│   │                 │  │                 │  │                 │                 │
+│   │ Unity Catalog:  │  │ Unity Catalog:  │  │ Unity Catalog:  │                 │
+│   │ pedregal-dev    │  │ pedregal-stg    │  │ pedregal-prod   │                 │
+│   │                 │  │                 │  │                 │                 │
+│   │ Hot Clusters: 0 │  │ Hot Clusters: 1 │  │ Hot Clusters: 3 │                 │
+│   └─────────────────┘  └─────────────────┘  └─────────────────┘                 │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Unity Catalog Configuration
+
+Clusters are pre-configured with Unity Catalog access:
+
+```python
+# Cluster template configuration
+spark_config = {
+    # Unity Catalog configuration
+    "spark.sql.catalog.pedregal": "org.apache.iceberg.spark.SparkCatalog",
+    "spark.sql.catalog.pedregal.type": "rest",
+    "spark.sql.catalog.pedregal.uri": "https://unity-catalog.doordash.team",
+    "spark.sql.catalog.pedregal.warehouse": "s3://doordash-lakehouse/warehouse",
+    "spark.sql.catalog.pedregal.credential": "uc-credential-provider",
+
+    # Feature store catalog
+    "spark.sql.catalog.feature_store": "org.apache.iceberg.spark.SparkCatalog",
+    "spark.sql.catalog.feature_store.type": "rest",
+    "spark.sql.catalog.feature_store.uri": "https://unity-catalog.doordash.team",
+
+    # Default catalog
+    "spark.sql.defaultCatalog": "pedregal",
+}
+```
+
+### Client Usage Examples
+
+**Metaflow Step (ML Pipeline):**
+```python
+from metaflow import FlowSpec, step
+from pyspark.sql import SparkSession
+
+class FeatureFlow(FlowSpec):
+    @step
+    def start(self):
+        # Connect to team's Spark Connect cluster
+        spark = SparkSession.builder \
+            .remote("sc://feature-eng.doordash.team") \
+            .getOrCreate()
+
+        # Access Unity Catalog tables directly
+        self.features = spark.table("pedregal.feature_store.user_features") \
+            .filter("ds = '2024-01-01'") \
+            .toPandas()
+
+        self.next(self.train)
+```
+
+**Jupyter Notebook:**
+```python
+# No local Spark installation needed!
+# Just: pip install pyspark[connect]
+
+from pyspark.sql import SparkSession
+
+spark = SparkSession.builder \
+    .remote("sc://feature-eng-dev.doordash.team") \
+    .getOrCreate()
+
+# Explore data interactively
+spark.sql("SHOW DATABASES IN pedregal").show()
+spark.sql("SELECT * FROM pedregal.raw.events LIMIT 10").show()
+```
+
+**CI/CD Pipeline:**
+```yaml
+# .github/workflows/feature-tests.yaml
+jobs:
+  test-features:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run feature tests
+        env:
+          SPARK_REMOTE: sc://feature-eng-ci.doordash.team
+        run: |
+          pip install pyspark[connect] pytest
+          pytest tests/features/
+```
+
+### Network Access from ML K8s
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                         NETWORK TOPOLOGY                                          │
+│                                                                                  │
+│   ML K8s Cluster                          Spark Infrastructure                   │
+│   ┌─────────────────────┐                 ┌─────────────────────┐               │
+│   │                     │                 │                     │               │
+│   │  ┌───────────────┐  │   gRPC/15002    │  ┌───────────────┐  │               │
+│   │  │ Metaflow Pod  │──┼─────────────────┼─▶│ Spark Gateway │  │               │
+│   │  │ (Spark Client)│  │                 │  │               │  │               │
+│   │  └───────────────┘  │                 │  └───────┬───────┘  │               │
+│   │                     │                 │          │          │               │
+│   │  ┌───────────────┐  │                 │          ▼          │               │
+│   │  │ Jupyter Pod   │──┼─────────────────┼─▶ ┌─────────────┐   │               │
+│   │  │ (Spark Client)│  │                 │   │ Driver Pod  │   │               │
+│   │  └───────────────┘  │                 │   │ + SC Server │   │               │
+│   │                     │                 │   └─────────────┘   │               │
+│   └─────────────────────┘                 └─────────────────────┘               │
+│                                                                                  │
+│   Network Policy: Allow egress from ML namespace to Spark Gateway on port 15002 │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Standardization Benefits
+
+| Aspect | Without Standardization | With Spark Gateway |
+|--------|------------------------|-------------------|
+| **Access** | SSH tunneling, port forwarding | `sc://team.doordash.team` |
+| **Auth** | Manual credential management | Okta SSO integration |
+| **Discovery** | "Ask around for cluster IP" | DNS-based discovery |
+| **Provisioning** | Manual ticket to infra team | Self-service API |
+| **Multi-region** | Separate process per region | Single API, regional routing |
+| **Catalogs** | Manual Spark config | Pre-configured templates |
+| **Environments** | Ad-hoc separation | Namespace-based isolation |
