@@ -1,0 +1,130 @@
+syntax = "proto3";
+
+package spark.runner.v1;
+
+option go_package = "github.com/doordash/spark-platform-docker-images/proto/sparkrunner";
+option java_package = "com.doordash.spark.runner.v1";
+
+// SparkRunnerService provides the core primitives for Spark job execution.
+// This is the gRPC interface that clients use to submit and manage Spark jobs.
+service SparkRunnerService {
+  // Submit creates a new Spark execution
+  rpc Submit(SubmitRequest) returns (SubmitResponse);
+
+  // Check retrieves the current execution state
+  rpc Check(CheckRequest) returns (CheckResponse);
+
+  // Cancel attempts to cancel a running execution
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+
+  // List returns executions for a job
+  rpc List(ListRequest) returns (ListResponse);
+}
+
+// JobSpec defines a Spark job specification
+message JobSpec {
+  string name = 1;
+  JobMetadata metadata = 2;
+  SparkSpec spark = 3;
+}
+
+message JobMetadata {
+  string team = 1;
+  string user = 2;
+  string owner_email = 3;
+  map<string, string> labels = 4;
+}
+
+message SparkSpec {
+  string main_class = 1;
+  string jar_path = 2;
+  repeated string args = 3;
+  map<string, string> spark_config = 4;
+  ResourceSpec driver = 5;
+  ResourceSpec executor = 6;
+  oneof job_type {
+    BatchSpec batch = 7;
+    StreamSpec stream = 8;
+  }
+}
+
+message ResourceSpec {
+  int32 cores = 1;
+  string memory = 2;
+  string memory_overhead = 3;
+  int32 instances = 4;  // For executors
+}
+
+message BatchSpec {
+  // Batch-specific configuration
+}
+
+message StreamSpec {
+  string checkpoint_location = 1;
+  string trigger_interval = 2;
+}
+
+// Submit messages
+message SubmitRequest {
+  JobSpec job_spec = 1;
+  string idempotency_key = 2;  // For deduplication
+}
+
+message SubmitResponse {
+  string execution_id = 1;
+  string vendor_run_id = 2;
+}
+
+// Check messages
+message CheckRequest {
+  string execution_id = 1;
+}
+
+message CheckResponse {
+  Execution execution = 1;
+}
+
+// Cancel messages
+message CancelRequest {
+  string execution_id = 1;
+  string team = 2;
+}
+
+message CancelResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// List messages
+message ListRequest {
+  string job_name = 1;
+  int32 limit = 2;
+}
+
+message ListResponse {
+  repeated Execution executions = 1;
+}
+
+// Execution represents a Spark job execution
+message Execution {
+  string execution_id = 1;
+  string job_path = 2;
+  string owner = 3;
+  string team = 4;
+  int64 start_time_ms = 5;
+  int64 end_time_ms = 6;
+  ExecutionState state = 7;
+  string vendor = 8;
+  string vendor_run_id = 9;
+  string vendor_webui = 10;
+  string vendor_logs_link = 11;
+}
+
+enum ExecutionState {
+  EXECUTION_STATE_UNSPECIFIED = 0;
+  EXECUTION_STATE_SUBMITTED = 1;
+  EXECUTION_STATE_RUNNING = 2;
+  EXECUTION_STATE_SUCCEEDED = 3;
+  EXECUTION_STATE_FAILED = 4;
+  EXECUTION_STATE_CANCELLED = 5;
+}

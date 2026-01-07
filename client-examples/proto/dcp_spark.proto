@@ -1,0 +1,253 @@
+syntax = "proto3";
+
+package dcp.spark.v1;
+
+option go_package = "github.com/doordash/spark-platform-docker-images/proto/dcpspark";
+option java_package = "com.doordash.dcp.spark.v1";
+
+// DCPSparkService provides REST/gRPC API for submitting Spark jobs through DCP.
+// This is the recommended entry point for external clients.
+service DCPSparkService {
+  // SubmitJob submits a new Spark job via DCP
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+
+  // GetJobStatus retrieves the status of a submitted job
+  rpc GetJobStatus(GetJobStatusRequest) returns (GetJobStatusResponse);
+
+  // CancelJob cancels a running job
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+
+  // ListJobs lists jobs for a team
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+
+  // GetJobLogs retrieves logs for a job
+  rpc GetJobLogs(GetJobLogsRequest) returns (GetJobLogsResponse);
+}
+
+// SubmitJobRequest contains the job specification
+message SubmitJobRequest {
+  // Job name (unique identifier within team)
+  string name = 1;
+
+  // Team that owns the job
+  string team = 2;
+
+  // User submitting the job
+  string user = 3;
+
+  // Job configuration
+  SparkJobConfig config = 4;
+
+  // Optional: idempotency key for deduplication
+  string idempotency_key = 5;
+
+  // Optional: callback URL for job completion notification
+  string callback_url = 6;
+}
+
+message SparkJobConfig {
+  // Spark engine version (e.g., "3.5")
+  string spark_version = 1;
+
+  // Job type
+  JobType job_type = 2;
+
+  // CoreETL configuration (for CoreETL jobs)
+  CoreETLConfig core_etl = 3;
+
+  // Custom JAR configuration (for non-CoreETL jobs)
+  CustomJarConfig custom_jar = 4;
+
+  // Resource configuration
+  ResourceConfig resources = 5;
+
+  // Spark configuration overrides
+  map<string, string> spark_config = 6;
+
+  // Environment variables
+  map<string, string> env_vars = 7;
+}
+
+enum JobType {
+  JOB_TYPE_UNSPECIFIED = 0;
+  JOB_TYPE_BATCH = 1;
+  JOB_TYPE_STREAMING = 2;
+}
+
+message CoreETLConfig {
+  // CoreETL version (e.g., "2.7.0")
+  string version = 1;
+
+  // Job specification (protobuf-encoded or JSON)
+  bytes job_spec = 2;
+
+  // Or provide as structured config
+  CoreETLJobSpec structured_spec = 3;
+}
+
+message CoreETLJobSpec {
+  repeated SourceConfig sources = 1;
+  repeated TransformConfig transformations = 2;
+  repeated SinkConfig sinks = 3;
+}
+
+message SourceConfig {
+  string type = 1;  // iceberg, kafka, s3, etc.
+  string catalog = 2;
+  string database = 3;
+  string table = 4;
+  string filter = 5;
+  map<string, string> options = 6;
+}
+
+message TransformConfig {
+  string type = 1;  // sql, python, etc.
+  string query = 2;
+  map<string, string> options = 3;
+}
+
+message SinkConfig {
+  string type = 1;  // iceberg, kafka, s3, etc.
+  string catalog = 2;
+  string database = 3;
+  string table = 4;
+  string mode = 5;  // append, overwrite, merge
+  repeated string partition_by = 6;
+  map<string, string> options = 7;
+}
+
+message CustomJarConfig {
+  string jar_path = 1;
+  string main_class = 2;
+  repeated string args = 3;
+}
+
+message ResourceConfig {
+  DriverConfig driver = 1;
+  ExecutorConfig executor = 2;
+}
+
+message DriverConfig {
+  int32 cores = 1;
+  string memory = 2;
+  string memory_overhead = 3;
+}
+
+message ExecutorConfig {
+  int32 instances = 1;
+  int32 cores = 2;
+  string memory = 3;
+  string memory_overhead = 4;
+  // Dynamic allocation settings
+  bool dynamic_allocation = 5;
+  int32 min_executors = 6;
+  int32 max_executors = 7;
+}
+
+message SubmitJobResponse {
+  // Unique job ID assigned by DCP
+  string job_id = 1;
+
+  // Execution ID from Spark Runner
+  string execution_id = 2;
+
+  // Current status
+  JobStatus status = 3;
+
+  // Spark UI URL (available once job starts)
+  string spark_ui_url = 4;
+
+  // Message (e.g., validation warnings)
+  string message = 5;
+}
+
+// GetJobStatus messages
+message GetJobStatusRequest {
+  string job_id = 1;
+}
+
+message GetJobStatusResponse {
+  string job_id = 1;
+  string execution_id = 2;
+  JobStatus status = 3;
+  int64 start_time_ms = 4;
+  int64 end_time_ms = 5;
+  string spark_ui_url = 6;
+  string logs_url = 7;
+  JobMetrics metrics = 8;
+  string error_message = 9;
+}
+
+enum JobStatus {
+  JOB_STATUS_UNSPECIFIED = 0;
+  JOB_STATUS_PENDING = 1;      // Queued, waiting for resources
+  JOB_STATUS_SUBMITTED = 2;    // Submitted to Spark Runner
+  JOB_STATUS_RUNNING = 3;      // Actively executing
+  JOB_STATUS_SUCCEEDED = 4;    // Completed successfully
+  JOB_STATUS_FAILED = 5;       // Failed with error
+  JOB_STATUS_CANCELLED = 6;    // Cancelled by user
+  JOB_STATUS_TIMEOUT = 7;      // Exceeded time limit
+}
+
+message JobMetrics {
+  int64 records_read = 1;
+  int64 records_written = 2;
+  int64 bytes_read = 3;
+  int64 bytes_written = 4;
+  int32 stages_completed = 5;
+  int32 tasks_completed = 6;
+  double executor_cpu_time_ms = 7;
+}
+
+// CancelJob messages
+message CancelJobRequest {
+  string job_id = 1;
+  string reason = 2;
+}
+
+message CancelJobResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ListJobs messages
+message ListJobsRequest {
+  string team = 1;
+  string job_name_prefix = 2;
+  JobStatus status_filter = 3;
+  int32 limit = 4;
+  string page_token = 5;
+}
+
+message ListJobsResponse {
+  repeated JobSummary jobs = 1;
+  string next_page_token = 2;
+}
+
+message JobSummary {
+  string job_id = 1;
+  string name = 2;
+  string team = 3;
+  JobStatus status = 4;
+  int64 start_time_ms = 5;
+  int64 end_time_ms = 6;
+}
+
+// GetJobLogs messages
+message GetJobLogsRequest {
+  string job_id = 1;
+  LogType log_type = 2;
+  int32 tail_lines = 3;  // Last N lines
+}
+
+enum LogType {
+  LOG_TYPE_UNSPECIFIED = 0;
+  LOG_TYPE_DRIVER = 1;
+  LOG_TYPE_EXECUTOR = 2;
+  LOG_TYPE_ALL = 3;
+}
+
+message GetJobLogsResponse {
+  string logs = 1;
+  string logs_url = 2;  // Link to full logs in ODIN
+}
