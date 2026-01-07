@@ -1,0 +1,102 @@
+# DCP Manifest Example for Spark Job
+# This manifest defines a CoreETL job that will be processed by DCP plugins
+# and submitted via Spark Runner to the Spark platform.
+
+apiVersion: dcp.pedregal.doordash.com/v1
+kind: SparkJob
+metadata:
+  name: example-data-transform
+  namespace: platform
+  team: data-infra
+  owner: data-infra@doordash.com
+
+spec:
+  # Spark engine configuration
+  engine:
+    version: "3.5"                    # Spark version
+    image_override: null              # Optional: custom Docker image
+
+  # Resource allocation
+  resources:
+    driver:
+      cores: 2
+      memory: "4g"
+      memoryOverhead: "1g"
+    executors:
+      instances: 5
+      cores: 4
+      memory: "8g"
+      memoryOverhead: "2g"
+
+  # Job type: batch or streaming
+  jobType: batch
+
+  # Spark Connect configuration (for interactive/sandbox)
+  sparkConnect:
+    enabled: true
+    port: 15002
+
+  # Testing mode configuration
+  testingMode:
+    useHotCluster: true               # Use pre-warmed cluster for faster startup
+    sandboxEnabled: true              # Allow sandbox access
+
+  # CoreETL specific configuration
+  coreEtl:
+    jarPath: "s3://core-etl-build-artifacts/jars/2.7.0/core-etl-driver-bundle.jar"
+    mainClass: "com.doordash.coreetl.spark.Main"
+
+    # Job specification
+    jobSpec:
+      name: "example-data-transform"
+      sources:
+        - type: iceberg
+          catalog: pedregal
+          database: raw
+          table: events
+          filter: "event_date >= current_date - interval 7 days"
+
+      transformations:
+        - type: sql
+          query: |
+            SELECT
+              event_id,
+              user_id,
+              event_type,
+              event_timestamp,
+              payload
+            FROM source
+            WHERE event_type IN ('order_created', 'order_completed')
+
+      sinks:
+        - type: iceberg
+          catalog: pedregal
+          database: derived
+          table: processed_events
+          mode: append
+          partitionBy:
+            - event_date
+
+  # Spark configuration overrides
+  sparkConfig:
+    spark.sql.shuffle.partitions: "200"
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.serializer: "org.apache.spark.serializer.KryoSerializer"
+
+  # Orchestration (Airflow DAG generation)
+  orchestration:
+    schedule: "0 */6 * * *"           # Every 6 hours
+    retryPolicy:
+      maxRetries: 3
+      retryDelayMinutes: 5
+    alerting:
+      onFailure: true
+      channels:
+        - slack:data-infra-alerts
+
+  # Observability
+  observability:
+    otelEnabled: true
+    metricsPrefix: "spark.job.example_transform"
+    logsEnabled: true
