@@ -6,14 +6,21 @@ This document describes the complete architecture for running Spark workloads in
 
 The Pedregal Spark Platform provides a unified, Pedregal-native way to run Spark workloads on Kubernetes (SK8), with EMR as an interim fallback.
 
+**Two distinct access patterns exist:**
+1. **Batch Jobs** - Submit via DCP → Spark Runner → Spark Gateway → SK8
+2. **Interactive Sessions** - Connect via Spark Gateway → Spark Connect Server
+
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                              ARCHITECTURE OVERVIEW                            │
 │                                                                              │
-│   DCP Manifest    Jupyter     Direct API                                     │
-│       │          Notebook        │                                           │
-│       │              │           │                                           │
-│       ▼              ▼           ▼                                           │
+│  ══════════════════════════════════════════════════════════════════════════  │
+│  MODE 1: BATCH JOBS (Job Submission)                                         │
+│  ══════════════════════════════════════════════════════════════════════════  │
+│                                                                              │
+│   DCP Manifest         Direct API                                            │
+│       │                    │                                                 │
+│       ▼                    ▼                                                 │
 │   ┌──────────────────────────────────────────┐                               │
 │   │           DCP Plugin (CoreETL)            │                               │
 │   │   - Parse manifest → JobSpec              │                               │
@@ -38,7 +45,35 @@ The Pedregal Spark Platform provides a unified, Pedregal-native way to run Spark
 │   │     Spark on K8s (SK8) or Docker          │                               │
 │   │   - SparkApplication CRD                  │                               │
 │   │   - Driver + Executor pods                │                               │
-│   │   - Spark Connect Server (port 15002)     │                               │
+│   └──────────────────────────────────────────┘                               │
+│                                                                              │
+│  ══════════════════════════════════════════════════════════════════════════  │
+│  MODE 2: INTERACTIVE SESSIONS (Spark Connect)                                │
+│  ══════════════════════════════════════════════════════════════════════════  │
+│                                                                              │
+│   Jupyter Notebook                                                           │
+│   DCP Sandbox                                                                │
+│   PySpark Client                                                             │
+│       │                                                                      │
+│       │  Spark Connect Client (thin client)                                  │
+│       │  - pyspark[connect] or spark-connect-client                          │
+│       │  - No local Spark installation needed                                │
+│       │                                                                      │
+│       ▼                                                                      │
+│   ┌──────────────────────────────────────────┐                               │
+│   │             Spark Gateway                 │                               │
+│   │   - Cluster discovery                     │                               │
+│   │   - Authentication / Authorization        │                               │
+│   │   - Routes to correct driver pod          │                               │
+│   │   - Hot cluster management                │                               │
+│   └──────────────────────┬───────────────────┘                               │
+│                          │                                                    │
+│   ┌──────────────────────▼───────────────────┐                               │
+│   │   Spark Connect Server (on Driver Pod)    │                               │
+│   │   - Runs inside Driver (port 15002)       │                               │
+│   │   - Session management                    │                               │
+│   │   - Query execution                       │                               │
+│   │   - NOT a separate service                │                               │
 │   └──────────────────────────────────────────┘                               │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -95,28 +130,87 @@ SK8 uses the Apache Spark Kubernetes Operator:
 
 ### 5. Spark Connect
 
-Spark Connect enables client-server separation. **Important:** Spark Connect is NOT a standalone service - it's a server that runs inside the Driver Pod. Clients access it **through Spark Gateway**.
+Spark Connect enables client-server separation for interactive workloads. **Important:** Spark Connect is NOT a standalone service - it's a server that runs inside the Driver Pod. Clients access it **through Spark Gateway**.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         SPARK CONNECT ARCHITECTURE                           │
 │                                                                             │
-│   Clients                     Spark Gateway              Driver Pod         │
-│   ┌─────────────┐            ┌─────────────┐         ┌─────────────────┐   │
-│   │ PySpark     │            │             │         │ Spark Connect   │   │
-│   │ Scala       │───────────▶│   Routes    │────────▶│ Server (15002)  │   │
-│   │ Jupyter     │            │   Auth      │         │                 │   │
-│   │ DCP Sandbox │            │   Discovery │         │ - Session mgmt  │   │
-│   └─────────────┘            └─────────────┘         │ - Query exec    │   │
-│                                                      └─────────────────┘   │
+│   Spark Connect Client         Spark Gateway              Driver Pod        │
+│   ┌─────────────────┐         ┌─────────────┐         ┌─────────────────┐  │
+│   │ PySpark Client  │         │             │         │ Spark Connect   │  │
+│   │ (pyspark[conn]) │────────▶│   Routes    │────────▶│ Server (15002)  │  │
+│   ├─────────────────┤         │   Auth      │         │                 │  │
+│   │ Scala Client    │         │   Discovery │         │ - Session mgmt  │  │
+│   │ (spark-connect) │         │             │         │ - Query exec    │  │
+│   ├─────────────────┤         └─────────────┘         │ - DataFrame ops │  │
+│   │ Jupyter Notebook│                                 └─────────────────┘  │
+│   │ DCP Sandbox     │                                                      │
+│   └─────────────────┘                                                      │
 │                                                                             │
-│   Flow: Client → Spark Gateway → Spark Connect Server (on Driver Pod)      │
+│   Flow: Spark Connect Client → Spark Gateway → Spark Connect Server        │
 │                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Spark Connect Client
+
+The Spark Connect Client is a thin client library that communicates with Spark Connect Server via gRPC:
+
+**Python (PySpark Connect):**
+```python
+# Install: pip install pyspark[connect]
+from pyspark.sql import SparkSession
+
+# Connect through Spark Gateway
+spark = SparkSession.builder \
+    .remote("sc://spark-gateway.service.prod.ddsd:15002") \
+    .getOrCreate()
+
+# Use DataFrame API as normal
+df = spark.sql("SELECT * FROM my_table")
+df.show()
+```
+
+**Scala/Java:**
+```scala
+// Add dependency: org.apache.spark:spark-connect-client-jvm_2.12:3.5.0
+import org.apache.spark.sql.SparkSession
+
+val spark = SparkSession.builder()
+  .remote("sc://spark-gateway.service.prod.ddsd:15002")
+  .getOrCreate()
+```
+
+#### What Spark Connect Client Provides
+
+| Feature | Description |
+|---------|-------------|
+| **Thin Client** | No local Spark installation required |
+| **gRPC Protocol** | Language-agnostic communication |
+| **DataFrame API** | Full DataFrame/Dataset operations |
+| **SQL Support** | Execute SQL queries remotely |
+| **Session Isolation** | Each client gets isolated session |
+
+#### What Spark Connect Client Does NOT Do
+
+- Does NOT execute Spark code locally
+- Does NOT require Spark JARs on client machine
+- Does NOT connect directly to executors
+- Does NOT bypass Spark Gateway (all traffic routes through gateway)
+
+#### Spark Gateway Role in Spark Connect
+
+Spark Gateway is the **single entry point** for Spark Connect:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
 │   Spark Gateway provides:                                                   │
 │   • Cluster discovery (which driver to connect to)                          │
 │   • Authentication/Authorization                                            │
 │   • Routing to correct domain namespace                                     │
 │   • Hot cluster management for fast startup                                 │
+│   • Load balancing across multiple drivers                                  │
 │                                                                             │
 │   Benefits:                                                                  │
 │   ✓ No SSH tunneling required                                               │
@@ -130,11 +224,19 @@ Spark Connect enables client-server separation. **Important:** Spark Connect is 
 
 ### Summary: Services vs Runtime Components
 
-| Name | Type | Deployed As |
-|------|------|-------------|
-| **Spark Runner** | Service | Pedregal Graph |
-| **Spark Gateway** | Service | Pedregal Service |
-| **Spark Connect** | Runtime Component | Runs inside Driver Pod (not separate) |
+| Name | Type | Deployed As | Used For |
+|------|------|-------------|----------|
+| **Spark Runner** | Service | Pedregal Graph | Batch job submission (Submit/Check/Cancel) |
+| **Spark Gateway** | Service | Pedregal Service | Routes to compute + Spark Connect proxy |
+| **Spark Connect Server** | Runtime Component | Runs inside Driver Pod | Interactive session execution |
+| **Spark Connect Client** | Client Library | Installed in user environment | Connects to Spark Connect Server |
+
+### Access Pattern Summary
+
+| Mode | Entry Point | Flow |
+|------|-------------|------|
+| **Batch Jobs** | DCP Manifest / REST API | DCP → Spark Runner → Spark Gateway → SK8 |
+| **Interactive** | Jupyter / PySpark | Spark Connect Client → Spark Gateway → Spark Connect Server |
 
 ## Testing Strategy
 
