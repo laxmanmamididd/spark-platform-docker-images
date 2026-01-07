@@ -418,40 +418,61 @@ DoorDash chose **Apache spark-kubernetes-operator** over Kubeflow spark-operator
 
 Spark Connect enables **client-server separation** for Spark, allowing thin clients to connect to a Spark cluster without requiring a local Spark installation.
 
+**Important:** Spark Connect is NOT a standalone service - it's a server process that runs **inside the Spark Driver Pod**. However, clients access it **through Spark Gateway**, which handles routing, authentication, and cluster discovery.
+
 ### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     SPARK CONNECT                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   Clients                           Spark Driver Pod            │
-│   ┌─────────────┐                   ┌────────────────────┐      │
-│   │ PySpark     │──sc://host:15002──▶│ Spark Connect     │      │
-│   │ Scala       │                   │ Server (gRPC)     │      │
-│   │ Jupyter     │                   │                    │      │
-│   │ DCP Sandbox │                   │ - Session mgmt    │      │
-│   └─────────────┘                   │ - Query execution │      │
-│                                     │ - Authentication  │      │
-│                                     └────────────────────┘      │
-│                                                                 │
-│   Benefits:                                                      │
-│   ✓ No SSH tunneling required                                   │
-│   ✓ Thin client (no local Spark installation)                   │
-│   ✓ Language-agnostic (gRPC protocol)                           │
-│   ✓ Session isolation                                           │
-│   ✓ Interactive/sandbox development                             │
-│   ✓ Fast startup for DCP sandbox flows                          │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         SPARK CONNECT ARCHITECTURE                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   Clients                     Spark Gateway              Driver Pod         │
+│   ┌─────────────┐            ┌─────────────┐         ┌─────────────────┐   │
+│   │ PySpark     │            │             │         │ Spark Connect   │   │
+│   │ Scala       │───────────▶│   Routes    │────────▶│ Server (15002)  │   │
+│   │ Jupyter     │            │   Auth      │         │                 │   │
+│   │ DCP Sandbox │            │   Discovery │         │ - Session mgmt  │   │
+│   └─────────────┘            └─────────────┘         │ - Query exec    │   │
+│                                                      └─────────────────┘   │
+│                                                                             │
+│   Flow: Client → Spark Gateway → Spark Connect Server (on Driver Pod)      │
+│                                                                             │
+│   Spark Gateway provides:                                                   │
+│   • Cluster discovery (which driver to connect to)                          │
+│   • Authentication/Authorization                                            │
+│   • Routing to correct domain namespace                                     │
+│   • Load balancing across hot clusters                                      │
+│                                                                             │
+│   Benefits:                                                                  │
+│   ✓ No SSH tunneling required                                               │
+│   ✓ Thin client (no local Spark installation)                               │
+│   ✓ Language-agnostic (gRPC protocol)                                       │
+│   ✓ Session isolation                                                       │
+│   ✓ Interactive/sandbox development                                         │
+│   ✓ Fast startup for DCP sandbox flows                                      │
+│   ✓ Single entry point via Spark Gateway                                    │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Connection Flow
+
+```
+1. Client requests interactive session from Spark Gateway
+2. Spark Gateway either:
+   a. Routes to existing hot cluster's Spark Connect server, OR
+   b. Triggers creation of new cluster, then routes to it
+3. Client receives connection details (sc://host:port)
+4. Client connects to Spark Connect server via Gateway proxy
 ```
 
 ### Connection URL
 
 ```
-sc://<host>:<port>
+sc://<gateway-host>:<port>
 
-Example: sc://spark-connect.sjns-data-control.svc:15002
+Example: sc://spark-gateway.service.prod.ddsd:15002
 ```
 
 ### Client Examples
@@ -924,12 +945,12 @@ Based on the official Spark Platform Architecture diagram, here is a detailed br
 
 ### Notebook Interaction Modes
 
-The diagram correctly shows Notebooks as **Spark Platform Clients** with two interaction modes:
+The diagram shows Notebooks as **Spark Platform Clients**. There are two interaction modes, and **both go through Spark Gateway**:
 
 #### Mode 1: Job Submission (Batch/Streaming Jobs)
 
 ```
-Notebooks → SparkRunner → spark-gateway → Cluster Proxy → K8 API Server → SKO → Driver/Executors
+Notebooks → SparkRunner → Spark Gateway → Cluster Proxy → K8 API Server → SKO → Driver/Executors
 ```
 
 This path is used when:
@@ -940,7 +961,7 @@ This path is used when:
 #### Mode 2: Interactive Sessions (via Spark Connect)
 
 ```
-Notebooks → Spark Connect Server (port 15002) → Driver Pod → Executors
+Notebooks → Spark Gateway → Spark Connect Server (on Driver Pod) → Executors
 ```
 
 This path is used when:
@@ -949,7 +970,13 @@ This path is used when:
 - DCP Sandbox development
 - Ad-hoc SQL queries
 
-**Note:** The Spark Connect server runs **inside the Driver Pod** and is not shown explicitly in the current diagram. For interactive notebook sessions, users connect directly to `sc://driver-host:15002`.
+**Important:** Both paths go through **Spark Gateway** as the single entry point. The Gateway provides:
+- **Cluster discovery** - finds the right Driver pod to connect to
+- **Authentication** - validates user/team permissions
+- **Routing** - directs to correct domain namespace
+- **Hot cluster management** - routes to pre-warmed clusters for fast startup
+
+**Note:** Spark Connect server runs **inside the Driver Pod** (not a separate service). The Gateway proxies connections to it.
 
 ### Key Observations from Diagram
 
@@ -966,37 +993,69 @@ This path is used when:
 
 ### Recommended Diagram Enhancement
 
-To make the notebook interaction clearer, consider adding:
+To make the notebook interaction clearer, consider updating the diagram to show:
 
 1. **Spark Connect port (15002)** annotation on Driver pods
-2. **Dashed line** from Notebooks directly to Driver (for interactive sessions)
-3. **Legend entry** for "Interactive Session" vs "Job Submission" paths
+2. **Both paths going through Spark Gateway** (single entry point)
+3. **Legend entry** for "Job Submission" vs "Interactive Session" paths
 
 ```
-Enhanced Notebook Flow:
+Corrected Notebook Flow (Both paths through Spark Gateway):
+
 ┌─────────────┐
 │  Notebooks  │
 └──────┬──────┘
        │
        ├───────────────────────────────────────┐
        │ (Job Submission)                      │ (Interactive Session)
-       ▼                                       ▼
-┌─────────────┐                        ┌──────────────────┐
-│ SparkRunner │                        │ Spark Connect    │
-└──────┬──────┘                        │ sc://host:15002  │
-       │                               └────────┬─────────┘
-       ▼                                        │
-┌──────────────┐                               │
-│spark-gateway │                               │
-└──────┬───────┘                               │
-       │                                        │
-       ▼                                        ▼
-┌──────────────────────────────────────────────────┐
-│              Driver Pod                          │
-│  ┌──────────────────────────────────────────┐   │
-│  │         Spark Connect Server (15002)      │◄──┘
-│  └──────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────┘
+       ▼                                       │
+┌─────────────┐                                │
+│ SparkRunner │                                │
+└──────┬──────┘                                │
+       │                                       │
+       └──────────────┬────────────────────────┘
+                      │
+                      ▼
+             ┌──────────────┐
+             │spark-gateway │  ◄── Single entry point for ALL Spark access
+             └──────┬───────┘
+                    │
+       ┌────────────┴────────────┐
+       │ (Job Submission)        │ (Interactive)
+       ▼                         ▼
+┌──────────────┐        ┌──────────────────────────────┐
+│Cluster Proxy │        │     Spark Connect Proxy      │
+│     ↓        │        │            ↓                 │
+│ K8 API Server│        │     Driver Pod:15002         │
+│     ↓        │        └──────────────────────────────┘
+│    SKO       │
+│     ↓        │
+│ Driver Pod   │
+└──────────────┘
+```
+
+### Key Insight: Spark Gateway as Single Entry Point
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     SPARK GATEWAY RESPONSIBILITIES                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  For Job Submission:                    For Interactive Sessions:           │
+│  ─────────────────────                  ────────────────────────            │
+│  • Receive SparkApplication CRD         • Route to existing hot cluster    │
+│  • Route to Cluster Proxy               • Or trigger new cluster creation  │
+│  • Forward to K8s API Server            • Proxy Spark Connect connections  │
+│  • Return vendor_run_id                 • Handle authentication            │
+│                                         • Load balance across clusters     │
+│                                                                             │
+│  Both flows benefit from:                                                   │
+│  • Centralized authentication/authorization                                 │
+│  • Domain namespace enforcement                                             │
+│  • Observability and audit logging                                          │
+│  • Multi-cluster routing and HA                                             │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---

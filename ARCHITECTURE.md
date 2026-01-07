@@ -95,30 +95,46 @@ SK8 uses the Apache Spark Kubernetes Operator:
 
 ### 5. Spark Connect
 
-Spark Connect enables client-server separation:
+Spark Connect enables client-server separation. **Important:** Spark Connect is NOT a standalone service - it's a server that runs inside the Driver Pod. Clients access it **through Spark Gateway**.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     SPARK CONNECT                                │
-│                                                                 │
-│   Clients                           Spark Driver Pod            │
-│   ┌─────────────┐                   ┌────────────────────┐      │
-│   │ PySpark     │──sc://host:15002──▶│ Spark Connect     │      │
-│   │ Scala       │                   │ Server (gRPC)     │      │
-│   │ Jupyter     │                   │                    │      │
-│   │ DCP Sandbox │                   │ - Session mgmt    │      │
-│   └─────────────┘                   │ - Query execution │      │
-│                                     │ - Authentication  │      │
-│                                     └────────────────────┘      │
-│                                                                 │
-│   Benefits:                                                      │
-│   ✓ No SSH tunneling required                                   │
-│   ✓ Thin client (no local Spark installation)                   │
-│   ✓ Language-agnostic (gRPC)                                    │
-│   ✓ Session isolation                                           │
-│   ✓ Interactive/sandbox development                             │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         SPARK CONNECT ARCHITECTURE                           │
+│                                                                             │
+│   Clients                     Spark Gateway              Driver Pod         │
+│   ┌─────────────┐            ┌─────────────┐         ┌─────────────────┐   │
+│   │ PySpark     │            │             │         │ Spark Connect   │   │
+│   │ Scala       │───────────▶│   Routes    │────────▶│ Server (15002)  │   │
+│   │ Jupyter     │            │   Auth      │         │                 │   │
+│   │ DCP Sandbox │            │   Discovery │         │ - Session mgmt  │   │
+│   └─────────────┘            └─────────────┘         │ - Query exec    │   │
+│                                                      └─────────────────┘   │
+│                                                                             │
+│   Flow: Client → Spark Gateway → Spark Connect Server (on Driver Pod)      │
+│                                                                             │
+│   Spark Gateway provides:                                                   │
+│   • Cluster discovery (which driver to connect to)                          │
+│   • Authentication/Authorization                                            │
+│   • Routing to correct domain namespace                                     │
+│   • Hot cluster management for fast startup                                 │
+│                                                                             │
+│   Benefits:                                                                  │
+│   ✓ No SSH tunneling required                                               │
+│   ✓ Thin client (no local Spark installation)                               │
+│   ✓ Language-agnostic (gRPC)                                                │
+│   ✓ Session isolation                                                       │
+│   ✓ Interactive/sandbox development                                         │
+│   ✓ Single entry point via Spark Gateway                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Summary: Services vs Runtime Components
+
+| Name | Type | Deployed As |
+|------|------|-------------|
+| **Spark Runner** | Service | Pedregal Graph |
+| **Spark Gateway** | Service | Pedregal Service |
+| **Spark Connect** | Runtime Component | Runs inside Driver Pod (not separate) |
 
 ## Testing Strategy
 
