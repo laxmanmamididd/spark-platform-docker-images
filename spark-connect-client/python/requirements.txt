@@ -1,0 +1,12 @@
+# Spark Connect Client Dependencies
+# For connecting to DoorDash Spark Connect clusters
+
+# Core Spark Connect client (thin client, no local Spark needed)
+pyspark[connect]>=3.5.0
+
+# Optional: For pandas integration
+pandas>=2.0.0
+pyarrow>=14.0.0
+
+# Optional: For authentication
+requests>=2.31.0

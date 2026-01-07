@@ -1,0 +1,290 @@
+syntax = "proto3";
+
+package doordash.spark.provisioning.v1;
+
+option go_package = "github.com/doordash/spark-platform/cluster-provisioning/api;api";
+option java_package = "com.doordash.spark.provisioning.v1";
+option java_multiple_files = true;
+
+// ClusterProvisioningService provides self-service APIs for teams to request
+// and manage Spark Connect clusters.
+service ClusterProvisioningService {
+    // RequestCluster creates a new Spark Connect cluster for a team.
+    rpc RequestCluster(RequestClusterRequest) returns (RequestClusterResponse);
+
+    // GetCluster retrieves the current state of a cluster.
+    rpc GetCluster(GetClusterRequest) returns (GetClusterResponse);
+
+    // ListClusters lists all clusters for a team.
+    rpc ListClusters(ListClustersRequest) returns (ListClustersResponse);
+
+    // DeleteCluster terminates and removes a cluster.
+    rpc DeleteCluster(DeleteClusterRequest) returns (DeleteClusterResponse);
+
+    // ScaleCluster adjusts the resources of an existing cluster.
+    rpc ScaleCluster(ScaleClusterRequest) returns (ScaleClusterResponse);
+
+    // ExtendClusterTTL extends the TTL of a cluster.
+    rpc ExtendClusterTTL(ExtendClusterTTLRequest) returns (ExtendClusterTTLResponse);
+}
+
+// Environment represents the deployment environment.
+enum Environment {
+    ENVIRONMENT_UNSPECIFIED = 0;
+    ENVIRONMENT_DEV = 1;
+    ENVIRONMENT_STAGING = 2;
+    ENVIRONMENT_CI = 3;
+    ENVIRONMENT_PROD = 4;
+}
+
+// Region represents the AWS region for the cluster.
+enum Region {
+    REGION_UNSPECIFIED = 0;
+    REGION_US_WEST_2 = 1;
+    REGION_US_EAST_1 = 2;
+    REGION_EU_WEST_1 = 3;
+}
+
+// ClusterSize represents predefined cluster sizes.
+enum ClusterSize {
+    CLUSTER_SIZE_UNSPECIFIED = 0;
+    CLUSTER_SIZE_SMALL = 1;   // 2 cores, 8GB driver; 2 executors with 4 cores, 16GB each
+    CLUSTER_SIZE_MEDIUM = 2;  // 4 cores, 16GB driver; 5 executors with 8 cores, 32GB each
+    CLUSTER_SIZE_LARGE = 3;   // 8 cores, 32GB driver; 10 executors with 16 cores, 64GB each
+    CLUSTER_SIZE_XLARGE = 4;  // 16 cores, 64GB driver; 20 executors with 32 cores, 128GB each
+}
+
+// ClusterStatus represents the current state of a cluster.
+enum ClusterStatus {
+    CLUSTER_STATUS_UNSPECIFIED = 0;
+    CLUSTER_STATUS_PENDING = 1;
+    CLUSTER_STATUS_PROVISIONING = 2;
+    CLUSTER_STATUS_RUNNING = 3;
+    CLUSTER_STATUS_SCALING = 4;
+    CLUSTER_STATUS_TERMINATING = 5;
+    CLUSTER_STATUS_TERMINATED = 6;
+    CLUSTER_STATUS_FAILED = 7;
+}
+
+// Backend represents the compute backend for the cluster.
+enum Backend {
+    BACKEND_UNSPECIFIED = 0;
+    BACKEND_SK8 = 1;    // Spark on Kubernetes
+    BACKEND_EMR = 2;    // Amazon EMR
+    BACKEND_DBR = 3;    // Databricks Runtime
+}
+
+// ResourceConfig specifies custom resource configuration.
+message ResourceConfig {
+    // Driver configuration
+    int32 driver_cores = 1;
+    string driver_memory = 2;  // e.g., "16g"
+
+    // Executor configuration
+    int32 executor_instances = 3;
+    int32 executor_cores = 4;
+    string executor_memory = 5;  // e.g., "32g"
+}
+
+// CatalogConfig specifies Unity Catalog access.
+message CatalogConfig {
+    // Name of the catalog (e.g., "pedregal", "feature_store")
+    string name = 1;
+
+    // Whether this is the default catalog
+    bool is_default = 2;
+}
+
+// Cluster represents a Spark Connect cluster.
+message Cluster {
+    // Unique cluster ID
+    string cluster_id = 1;
+
+    // Team that owns the cluster
+    string team = 2;
+
+    // Cluster name (human-readable)
+    string name = 3;
+
+    // Environment
+    Environment environment = 4;
+
+    // Region
+    Region region = 5;
+
+    // Current status
+    ClusterStatus status = 6;
+
+    // Spark Connect endpoint
+    string endpoint = 7;
+
+    // Backend type
+    Backend backend = 8;
+
+    // Cluster size
+    ClusterSize size = 9;
+
+    // Custom resource config (if specified)
+    ResourceConfig custom_resources = 10;
+
+    // Configured catalogs
+    repeated CatalogConfig catalogs = 11;
+
+    // Creation timestamp (RFC3339)
+    string created_at = 12;
+
+    // Expiration timestamp (RFC3339), empty for persistent clusters
+    string expires_at = 13;
+
+    // Last activity timestamp (RFC3339)
+    string last_activity_at = 14;
+
+    // Kubernetes namespace
+    string namespace = 15;
+
+    // Spark version
+    string spark_version = 16;
+}
+
+// RequestClusterRequest is the request to create a new cluster.
+message RequestClusterRequest {
+    // Team name (required)
+    string team = 1;
+
+    // Cluster name (optional, auto-generated if not provided)
+    string name = 2;
+
+    // Environment (required)
+    Environment environment = 3;
+
+    // Region (required)
+    Region region = 4;
+
+    // Cluster size (use this OR custom_resources)
+    ClusterSize size = 5;
+
+    // Custom resource configuration (use this OR size)
+    ResourceConfig custom_resources = 6;
+
+    // Catalogs to configure (default: ["pedregal"])
+    repeated string catalogs = 7;
+
+    // TTL duration (e.g., "24h", "7d"), empty for persistent
+    string ttl = 8;
+
+    // Preferred backend (optional, system selects if not specified)
+    Backend preferred_backend = 9;
+
+    // Spark version (optional, uses default if not specified)
+    string spark_version = 10;
+
+    // Requester email (for notifications)
+    string requester_email = 11;
+
+    // Idempotency key for safe retries
+    string idempotency_key = 12;
+}
+
+// RequestClusterResponse is the response after requesting a cluster.
+message RequestClusterResponse {
+    // The created cluster
+    Cluster cluster = 1;
+
+    // Estimated time until cluster is ready (seconds)
+    int32 estimated_ready_seconds = 2;
+}
+
+// GetClusterRequest is the request to get cluster details.
+message GetClusterRequest {
+    // Cluster ID
+    string cluster_id = 1;
+}
+
+// GetClusterResponse is the response with cluster details.
+message GetClusterResponse {
+    Cluster cluster = 1;
+}
+
+// ListClustersRequest is the request to list clusters.
+message ListClustersRequest {
+    // Filter by team (required)
+    string team = 1;
+
+    // Filter by environment (optional)
+    Environment environment = 2;
+
+    // Filter by region (optional)
+    Region region = 3;
+
+    // Filter by status (optional)
+    ClusterStatus status = 4;
+
+    // Page size
+    int32 page_size = 5;
+
+    // Page token for pagination
+    string page_token = 6;
+}
+
+// ListClustersResponse is the response with list of clusters.
+message ListClustersResponse {
+    repeated Cluster clusters = 1;
+
+    // Next page token, empty if no more pages
+    string next_page_token = 2;
+
+    // Total count of clusters matching filters
+    int32 total_count = 3;
+}
+
+// DeleteClusterRequest is the request to delete a cluster.
+message DeleteClusterRequest {
+    // Cluster ID
+    string cluster_id = 1;
+
+    // Force delete even if cluster has active sessions
+    bool force = 2;
+}
+
+// DeleteClusterResponse is the response after deleting a cluster.
+message DeleteClusterResponse {
+    // Whether deletion was initiated
+    bool success = 1;
+
+    // Message with details
+    string message = 2;
+}
+
+// ScaleClusterRequest is the request to scale a cluster.
+message ScaleClusterRequest {
+    // Cluster ID
+    string cluster_id = 1;
+
+    // New size
+    ClusterSize new_size = 2;
+
+    // Or custom resources
+    ResourceConfig new_resources = 3;
+}
+
+// ScaleClusterResponse is the response after scaling a cluster.
+message ScaleClusterResponse {
+    Cluster cluster = 1;
+}
+
+// ExtendClusterTTLRequest is the request to extend cluster TTL.
+message ExtendClusterTTLRequest {
+    // Cluster ID
+    string cluster_id = 1;
+
+    // Extension duration (e.g., "24h", "7d")
+    string extension = 2;
+}
+
+// ExtendClusterTTLResponse is the response after extending TTL.
+message ExtendClusterTTLResponse {
+    Cluster cluster = 1;
+
+    // New expiration timestamp
+    string new_expires_at = 2;
+}

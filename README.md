@@ -1,177 +1,333 @@
 # Spark Platform Docker Images and Testing Framework
 
-A comprehensive framework for Spark job submission and testing, designed to integrate with DoorDash's Pedregal Spark Platform architecture.
+A comprehensive framework for Spark job submission, interactive Spark Connect sessions, and testing, designed to integrate with DoorDash's Pedregal Spark Platform architecture.
 
 ## Architecture Overview
 
+This platform provides **two distinct access patterns**:
+
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                         CLIENT ENTRY POINTS                                   │
-│                                                                              │
-│  Option 1: DCP REST API (Recommended for external services)                  │
-│  ─────────────────────────────────────────────────────────────               │
-│  REST Client → DCP Server → Spark Runner → Spark Gateway → SK8              │
-│                                                                              │
-│  Option 2: Spark Runner gRPC (Internal Pedregal graphs)                      │
-│  ─────────────────────────────────────────────────────────────               │
-│  gRPC Client → Spark Runner → Spark Gateway → SK8                           │
-│                                                                              │
-│  Option 3: DCP Manifest (GitOps / CI-CD)                                     │
-│  ─────────────────────────────────────────────────────────────               │
-│  YAML Manifest → DCP Plugin → Spark Runner → Spark Gateway → SK8            │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                              ACCESS PATTERNS                                      │
+│                                                                                  │
+│  ═══════════════════════════════════════════════════════════════════════════════ │
+│  MODE 1: BATCH JOBS                                                              │
+│  ═══════════════════════════════════════════════════════════════════════════════ │
+│                                                                                  │
+│    DCP Manifest / REST API                                                       │
+│           │                                                                      │
+│           ▼                                                                      │
+│    ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐          │
+│    │  DCP Plugin     │────▶│  Spark Runner   │────▶│  Spark Gateway  │──▶ SK8   │
+│    │  (CoreETL)      │     │  Submit/Check   │     │  Routes/Auth    │          │
+│    └─────────────────┘     └─────────────────┘     └─────────────────┘          │
+│                                                                                  │
+│  ═══════════════════════════════════════════════════════════════════════════════ │
+│  MODE 2: INTERACTIVE (Spark Connect)                                             │
+│  ═══════════════════════════════════════════════════════════════════════════════ │
+│                                                                                  │
+│    Jupyter / Metaflow / PySpark                                                  │
+│           │                                                                      │
+│           │  Spark Connect Client (pyspark[connect])                             │
+│           ▼                                                                      │
+│    ┌─────────────────┐     ┌─────────────────────────────────────────┐          │
+│    │  Spark Gateway  │────▶│  Spark Connect Server (on Driver Pod)   │          │
+│    │  gRPC Proxy     │     │  Session mgmt, Query execution          │          │
+│    └─────────────────┘     └─────────────────────────────────────────┘          │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Quick Start
+
+### Interactive Sessions (Spark Connect)
+
+```python
+# Install: pip install pyspark[connect]
+from pyspark.sql import SparkSession
+
+# Connect to your team's cluster through Spark Gateway
+spark = SparkSession.builder \
+    .remote("sc://feature-eng-prod.doordash.team:15002") \
+    .getOrCreate()
+
+# Access Unity Catalog tables
+df = spark.table("pedregal.feature_store.user_features")
+df.show()
+```
+
+### Using the Python Helper Library
+
+```python
+from spark_connect_client import SparkConnectClient
+
+# Connect with team/environment/region
+spark = SparkConnectClient.create_session(
+    team="feature-engineering",
+    environment="prod",
+    region="us-west-2"
+)
+
+# Use Spark as normal
+df = spark.sql("SELECT * FROM pedregal.raw.events LIMIT 10")
+```
+
+### Batch Job Submission (REST API)
+
+```bash
+curl -X POST http://dcp-spark:8080/api/v1/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "my-etl-job",
+    "team": "data-infra",
+    "config": {
+      "spark_version": "3.5",
+      "job_type": "BATCH",
+      "core_etl": {
+        "version": "2.7.0",
+        "job_spec": {...}
+      }
+    }
+  }'
 ```
 
 ## Components
 
-### 1. Client Examples (`client-examples/`)
-- **DCP REST Client (Go)** - Submit jobs via REST API
-- **DCP REST Server (Go)** - Example DCP server implementation
-- **Java Client** - Java client for DCP Spark API
-- **Proto definitions** - gRPC service definitions
+### Services (Control Plane)
 
-### 2. Spark Docker Image (`docker/`)
-- Multi-layer Docker image with Spark + Spark Connect
-- Configurable for different Spark versions
-- Includes Unity Catalog and S3 connectors
+| Component | Type | Description |
+|-----------|------|-------------|
+| **Spark Runner** | Pedregal Graph | Submit/Check/Cancel primitives for batch jobs |
+| **Spark Gateway** | Pedregal Service | Routes to compute, gRPC proxy for Spark Connect |
+| **Cluster Provisioning** | API Service | Self-service cluster management |
 
-### 3. Spark Runner (`spark-runner/`)
-- Go implementation of the Spark Runner interface
-- Submit/Check/Cancel primitives
-- Integration with Spark Gateway
+### Runtime Components
 
-### 4. Spark Gateway (`spark-gateway/`)
-- Routes jobs to containerized Spark
-- Manages SparkApplication lifecycle
-- Supports local Docker and K8s backends
+| Component | Type | Description |
+|-----------|------|-------------|
+| **Spark Connect Server** | Runs on Driver Pod | Handles interactive sessions (port 15002) |
+| **Spark Connect Client** | Client Library | Thin client for connecting to clusters |
 
-### 5. TestContainers (`testcontainers/`)
-- Java TestContainers modules
-- Automatic container lifecycle management
-- Port mapping and health checks
+## Directory Structure
 
-### 6. DCP Example (`dcp-example/`)
-- Sample DCP manifest
-- CoreETL job specification
+```
+.
+├── ARCHITECTURE.md                    # Detailed architecture documentation
+├── PEDREGAL_SPARK_PLATFORM.md         # Complete platform reference
+├── README.md                          # This file
+│
+├── spark-connect-client/              # Spark Connect client libraries
+│   ├── python/
+│   │   ├── spark_connect_client.py    # Python helper library
+│   │   └── requirements.txt
+│   └── java/
+│       ├── pom.xml
+│       └── src/main/java/.../SparkConnectClient.java
+│
+├── spark-gateway/                     # Spark Gateway implementation
+│   ├── gateway.go                     # Docker-based gateway
+│   └── spark_connect_proxy.go         # gRPC proxy for Spark Connect
+│
+├── spark-runner/                      # Spark Runner implementation
+│   ├── runner.go
+│   └── runner_test.go
+│
+├── cluster-provisioning/              # Self-service cluster provisioning
+│   ├── proto/
+│   │   └── cluster_provisioning.proto # gRPC API definitions
+│   └── api/
+│       └── server.go                  # Provisioning server
+│
+├── client-examples/                   # DCP client examples
+│   ├── proto/                         # gRPC definitions
+│   ├── dcp-rest-client/               # Go REST client
+│   ├── dcp-rest-server/               # Go REST server
+│   └── java-client/                   # Java REST client
+│
+├── examples/                          # Usage examples
+│   ├── metaflow/
+│   │   └── feature_pipeline.py        # Metaflow feature engineering
+│   ├── jupyter/
+│   │   └── spark_connect_notebook.ipynb
+│   └── ci-cd/
+│       ├── feature_tests.py           # pytest tests
+│       └── github-workflow.yaml       # CI/CD workflow
+│
+├── testcontainers/                    # Java TestContainers
+│   ├── build.gradle.kts
+│   └── src/
+│
+├── docker/                            # Spark Docker image
+│   ├── Dockerfile
+│   ├── build.sh
+│   └── entrypoint.sh
+│
+└── dcp-example/                       # DCP manifest example
+    └── manifest.yaml
+```
 
-## Quick Start
+## Spark Connect Client Usage
 
-### Submit a Job via REST API (Go)
+### Python
 
-```go
-package main
+```python
+# Install
+pip install pyspark[connect]
 
-import (
-    "context"
-    "encoding/json"
-    "fmt"
+# Option 1: Direct connection
+from pyspark.sql import SparkSession
+spark = SparkSession.builder \
+    .remote("sc://feature-eng.doordash.team:15002") \
+    .getOrCreate()
 
-    dcpclient "github.com/doordash/spark-platform-docker-images/client-examples/dcp-rest-client"
-)
+# Option 2: Using helper library
+from spark_connect_client import get_spark_session
+spark = get_spark_session("feature-engineering", "prod", "us-west-2")
 
-func main() {
-    client := dcpclient.NewClient("http://dcp-spark.service.prod.ddsd:8080")
+# Option 3: From environment variables
+# export SPARK_CONNECT_TEAM=feature-engineering
+# export SPARK_CONNECT_ENV=prod
+from spark_connect_client import SparkConnectClient
+spark = SparkConnectClient.create_session_from_env()
+```
 
-    // Define CoreETL job spec
-    jobSpec := map[string]interface{}{
-        "sources": []map[string]interface{}{
-            {"type": "iceberg", "catalog": "pedregal", "database": "raw", "table": "events"},
-        },
-        "transformations": []map[string]interface{}{
-            {"type": "sql", "query": "SELECT * FROM source WHERE event_type = 'order'"},
-        },
-        "sinks": []map[string]interface{}{
-            {"type": "iceberg", "catalog": "pedregal", "database": "derived", "table": "orders"},
-        },
-    }
-    jobSpecJSON, _ := json.Marshal(jobSpec)
+### Java/Scala
 
-    resp, err := client.SubmitJob(context.Background(), &dcpclient.SubmitJobRequest{
-        Name: "my-etl-job",
-        Team: "data-infra",
-        User: "user@doordash.com",
-        Config: dcpclient.SparkJobConfig{
-            SparkVersion: "3.5",
-            JobType:      "BATCH",
-            CoreETL: &dcpclient.CoreETLConfig{
-                Version: "2.7.0",
-                JobSpec: jobSpecJSON,
-            },
-            Resources: dcpclient.ResourceConfig{
-                Driver:   dcpclient.DriverConfig{Cores: 2, Memory: "4g"},
-                Executor: dcpclient.ExecutorConfig{Instances: 5, Cores: 4, Memory: "8g"},
-            },
-        },
-    })
+```java
+// Add dependency: org.apache.spark:spark-connect-client-jvm_2.12:3.5.0
 
-    if err != nil {
-        panic(err)
-    }
+// Option 1: Direct connection
+SparkSession spark = SparkSession.builder()
+    .remote("sc://feature-eng.doordash.team:15002")
+    .getOrCreate();
 
-    fmt.Printf("Job submitted: %s\n", resp.JobID)
+// Option 2: Using helper library
+SparkSession spark = SparkConnectClient.builder()
+    .team("feature-engineering")
+    .environment(Environment.PROD)
+    .region(Region.US_WEST_2)
+    .build();
+```
+
+## Cluster Provisioning
+
+Teams can request clusters through the self-service API:
+
+```bash
+# Request a new cluster
+curl -X POST http://cluster-provisioning:8080/api/v1/clusters \
+  -H "Content-Type: application/json" \
+  -d '{
+    "team": "feature-engineering",
+    "environment": "prod",
+    "region": "eu-west-1",
+    "size": "medium",
+    "catalogs": ["pedregal", "feature_store"],
+    "ttl": "7d"
+  }'
+
+# Response
+{
+  "cluster_id": "sc-feateng-pro-euw1-abc123",
+  "endpoint": "sc://feateng-prod-euwest1.doordash.team:15002",
+  "status": "provisioning",
+  "estimated_ready_seconds": 120
 }
 ```
 
-### Submit a Job via REST API (Java)
+## Examples
 
-```java
-DCPSparkClient client = new DCPSparkClient("http://dcp-spark.service.prod.ddsd:8080");
+### Metaflow Pipeline
 
-SubmitJobRequest request = SubmitJobRequest.builder()
-    .name("my-etl-job")
-    .team("data-infra")
-    .user("user@doordash.com")
-    .config(SparkJobConfig.builder()
-        .sparkVersion("3.5")
-        .jobType("BATCH")
-        .coreEtl(CoreETLConfig.builder()
-            .version("2.7.0")
-            .jobSpec(jobSpecJson)
-            .build())
-        .resources(ResourceConfig.builder()
-            .driver(DriverConfig.builder().cores(2).memory("4g").build())
-            .executor(ExecutorConfig.builder().instances(5).cores(4).memory("8g").build())
-            .build())
-        .build())
-    .build();
+```python
+from metaflow import FlowSpec, step
+from spark_connect_client import SparkConnectClient
 
-SubmitJobResponse response = client.submitJob(request);
-System.out.println("Job ID: " + response.getJobId());
+class FeatureFlow(FlowSpec):
+    @step
+    def start(self):
+        spark = SparkConnectClient.create_session(
+            team="feature-engineering",
+            environment="prod"
+        )
+        self.features = spark.table("pedregal.feature_store.user_features") \
+            .filter("ds = '2024-01-01'") \
+            .toPandas()
+        self.next(self.train)
 ```
 
-### Submit via DCP Manifest (YAML)
+### CI/CD Testing
 
 ```yaml
-# dcp-example/manifest.yaml
-apiVersion: dcp.pedregal.doordash.com/v1
-kind: SparkJob
-metadata:
-  name: example-data-transform
-  team: data-infra
-spec:
-  engine:
-    version: "3.5"
-  jobType: batch
-  coreEtl:
-    version: "2.7.0"
-    jobSpec:
-      sources:
-        - type: iceberg
-          catalog: pedregal
-          database: raw
-          table: events
-      transformations:
-        - type: sql
-          query: "SELECT * FROM source"
-      sinks:
-        - type: iceberg
-          catalog: pedregal
-          database: derived
-          table: processed_events
+# .github/workflows/feature-tests.yaml
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pip install pyspark[connect] pytest
+      - run: pytest tests/feature_tests.py
+        env:
+          SPARK_CONNECT_TEAM: feature-engineering
+          SPARK_CONNECT_ENV: ci
 ```
 
-### Run Tests with TestContainers
+### Jupyter Notebook
+
+```python
+from spark_connect_client import SparkConnectClient
+
+spark = SparkConnectClient.create_session(
+    team="feature-engineering",
+    environment="dev"
+)
+
+# Explore data
+spark.sql("SHOW TABLES IN pedregal.raw").show()
+spark.sql("SELECT * FROM pedregal.raw.events LIMIT 10").show()
+```
+
+## Multi-Tenant Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           TEAM ISOLATION                                         │
+│                                                                                 │
+│  Feature Engineering          ML Platform              Data Science             │
+│  ┌─────────────────┐        ┌─────────────────┐      ┌─────────────────┐       │
+│  │ sc://feat-eng   │        │ sc://ml-plat    │      │ sc://data-sci   │       │
+│  │ .doordash.team  │        │ .doordash.team  │      │ .doordash.team  │       │
+│  └────────┬────────┘        └────────┬────────┘      └────────┬────────┘       │
+│           │                          │                        │                 │
+│           └──────────────────────────┼────────────────────────┘                 │
+│                                      │                                          │
+│                                      ▼                                          │
+│                         ┌─────────────────────────┐                             │
+│                         │     Spark Gateway       │                             │
+│                         │  • Auth (Okta)          │                             │
+│                         │  • Routing              │                             │
+│                         │  • Discovery            │                             │
+│                         └─────────────────────────┘                             │
+│                                      │                                          │
+│           ┌──────────────────────────┼──────────────────────────┐               │
+│           ▼                          ▼                          ▼               │
+│    ┌─────────────┐           ┌─────────────┐           ┌─────────────┐         │
+│    │  US-WEST-2  │           │  US-EAST-1  │           │  EU-WEST-1  │         │
+│    │  SK8/DBR    │           │  SK8/DBR    │           │  EMR/DBR    │         │
+│    └─────────────┘           └─────────────┘           └─────────────┘         │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Environment Separation
+
+| Environment | Endpoint Pattern | Use Case |
+|-------------|------------------|----------|
+| **dev** | `sc://team-dev.doordash.team` | Local development, exploration |
+| **staging** | `sc://team-staging.doordash.team` | Pre-production testing |
+| **ci** | `sc://team-ci.doordash.team` | Automated CI/CD tests |
+| **prod** | `sc://team.doordash.team` | Production workloads |
+
+## TestContainers (Local Testing)
 
 ```java
 @Container
@@ -180,108 +336,35 @@ SparkContainer spark = SparkContainer.builder()
     .withSparkConfig("spark.sql.shuffle.partitions", "4")
     .build();
 
-// Connect via Spark Connect
 SparkSession session = SparkSession.builder()
     .remote(spark.getSparkConnectUrl())  // sc://localhost:xxxxx
     .getOrCreate();
-
-// Run queries
-Dataset<Row> df = session.sql("SELECT 1 as id, 'hello' as message");
 ```
 
-## REST API Reference
+## API Reference
 
-### POST /api/v1/jobs - Submit Job
+### Cluster Provisioning API
 
-```bash
-curl -X POST http://dcp-spark:8080/api/v1/jobs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "my-job",
-    "team": "data-infra",
-    "user": "user@doordash.com",
-    "config": {
-      "spark_version": "3.5",
-      "job_type": "BATCH",
-      "core_etl": {
-        "version": "2.7.0",
-        "job_spec": {...}
-      },
-      "resources": {
-        "driver": {"cores": 2, "memory": "4g"},
-        "executor": {"instances": 5, "cores": 4, "memory": "8g"}
-      }
-    }
-  }'
-```
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/clusters` | POST | Request new cluster |
+| `/api/v1/clusters/{id}` | GET | Get cluster status |
+| `/api/v1/clusters` | GET | List team clusters |
+| `/api/v1/clusters/{id}` | DELETE | Delete cluster |
+| `/api/v1/clusters/{id}/scale` | POST | Scale cluster |
+| `/api/v1/clusters/{id}/ttl` | POST | Extend TTL |
 
-### GET /api/v1/jobs/{jobID} - Get Job Status
+### DCP REST API
 
-```bash
-curl http://dcp-spark:8080/api/v1/jobs/abc-123
-```
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/jobs` | POST | Submit batch job |
+| `/api/v1/jobs/{id}` | GET | Get job status |
+| `/api/v1/jobs/{id}` | DELETE | Cancel job |
+| `/api/v1/jobs/{id}/logs` | GET | Get job logs |
 
-### DELETE /api/v1/jobs/{jobID} - Cancel Job
+## Related Documentation
 
-```bash
-curl -X DELETE http://dcp-spark:8080/api/v1/jobs/abc-123
-```
-
-### GET /api/v1/jobs/{jobID}/logs - Get Logs
-
-```bash
-curl http://dcp-spark:8080/api/v1/jobs/abc-123/logs
-```
-
-## Directory Structure
-
-```
-.
-├── ARCHITECTURE.md              # Detailed architecture documentation
-├── README.md                    # This file
-├── client-examples/
-│   ├── README.md
-│   ├── proto/
-│   │   ├── spark_runner.proto   # Spark Runner gRPC definitions
-│   │   └── dcp_spark.proto      # DCP Spark API definitions
-│   ├── dcp-rest-client/         # Go REST client
-│   ├── dcp-rest-server/         # Go REST server
-│   └── java-client/             # Java REST client
-├── docker/
-│   ├── Dockerfile
-│   ├── build.sh
-│   ├── entrypoint.sh
-│   └── spark-defaults.conf
-├── spark-runner/
-│   ├── go.mod
-│   ├── runner.go
-│   └── runner_test.go
-├── spark-gateway/
-│   └── gateway.go
-├── testcontainers/
-│   ├── build.gradle.kts
-│   └── src/
-└── dcp-example/
-    └── manifest.yaml
-```
-
-## Integration with Pedregal
-
-This framework mirrors the production Pedregal Spark Platform:
-
-1. **DCP REST API** → Primary entry point for external services
-2. **Spark Runner** → Core Submit/Check/Cancel primitives
-3. **Spark Gateway** → Routes to compute backend (SK8 or EMR)
-4. **SK8/Docker** → Executes Spark applications
-5. **Spark Connect** → Enables interactive sessions (port 15002)
-
-For testing, Docker replaces SK8 while maintaining the same interfaces.
-
-## When to Use Each Entry Point
-
-| Entry Point | Use Case |
-|-------------|----------|
-| DCP REST API | External services, CI/CD pipelines, programmatic job submission |
-| DCP Manifest | GitOps workflows, declarative job definitions |
-| Spark Runner gRPC | Internal Pedregal graphs, custom orchestrators |
-| TestContainers | Unit/integration testing, local development |
+- [ARCHITECTURE.md](ARCHITECTURE.md) - Detailed architecture with diagrams
+- [PEDREGAL_SPARK_PLATFORM.md](PEDREGAL_SPARK_PLATFORM.md) - Complete platform reference
+- [Apache Spark Connect](https://spark.apache.org/docs/latest/spark-connect-overview.html)
