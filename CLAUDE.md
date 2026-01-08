@@ -164,6 +164,7 @@ cd testcontainers && ./gradlew test
 | `PEDREGAL_SPARK_PLATFORM.md` | Complete platform reference (1000+ lines) |
 | `ARCHITECTURE.md` | Architecture diagrams and flows |
 | `INTERNAL_SPARK_RUNTIME.md` | SK8 runtime details |
+| `DCP_SPARK_INTEGRATION.md` | **DCP Playground → SK8 integration with code examples** |
 | `JIRA_TICKETS.md` | All planned work items |
 
 ## When Working on This Project
@@ -190,6 +191,26 @@ A: Auto Parameter Selection - recommends cluster sizing based on historical data
 
 **Q: What's AR?**
 A: Auto-Retry/Remediation - classifies failures and recommends retries.
+
+**Q: How does DCP Playground integrate with SK8?**
+A: See `DCP_SPARK_INTEGRATION.md` for full flow:
+1. User writes manifest.yaml in DCP Playground
+2. "Run" button triggers PlaygroundSandbox
+3. Sandbox calls Spark Runner.Submit()
+4. Spark Runner → Spark Gateway → SK8 cluster
+5. SparkApplication CRD created in environment namespace
+
+**Q: How are environments isolated?**
+A: Four environments with different namespaces, catalogs, and clusters:
+- `local`: `sjns-playground-local-{user}` → pedregal-dev
+- `test`: `sjns-playground-test` → pedregal-test
+- `staging`: `sjns-{team}-staging` → pedregal-staging
+- `prod`: `sjns-{team}-prod` → pedregal-prod
+
+**Q: What Docker image should be used?**
+A: `spark-platform/{version}-oss:tag` from `doordash-docker.jfrog.io`:
+- local/test: `:latest`
+- staging/prod: `-coreetl:2.7.0` (includes CoreETL)
 
 ## Glossary
 
