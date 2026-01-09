@@ -165,6 +165,7 @@ cd testcontainers && ./gradlew test
 | `ARCHITECTURE.md` | Architecture diagrams and flows |
 | `INTERNAL_SPARK_RUNTIME.md` | SK8 runtime details |
 | `DCP_SPARK_INTEGRATION.md` | **DCP Playground → SK8 integration with code examples** |
+| `SPARK_CONNECT_CLIENT_PATTERNS.md` | **Client connection patterns (5 patterns with code)** |
 | `JIRA_TICKETS.md` | All planned work items |
 
 ## When Working on This Project
@@ -179,6 +180,14 @@ cd testcontainers && ./gradlew test
 
 **Q: Where does Spark Connect server run?**
 A: Inside the Driver Pod (port 15002), NOT as a separate service. Clients access it through Spark Gateway.
+
+**Q: How do clients connect to Spark Connect?**
+A: See `SPARK_CONNECT_CLIENT_PATTERNS.md` for 5 patterns:
+1. Direct API Connection (Python/Java)
+2. DCP Playground Interactive Sandbox
+3. Jupyter Notebook Integration
+4. CI/CD Pipeline Testing
+5. Metaflow Pipeline Integration
 
 **Q: What's the difference between SK8 and SJEM?**
 A: SK8 is Spark on K8s (new). SJEM is the legacy service that submits to EMR/Databricks.
