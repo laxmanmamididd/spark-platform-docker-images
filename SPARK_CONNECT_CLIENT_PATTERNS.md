@@ -167,250 +167,799 @@ public class SparkConnectApiClient {
 
 ---
 
-### Pattern 2: DCP Playground (Interactive Sandbox)
+### Pattern 2: DCP Playground (Batch Jobs via Spark Runner)
 
-For developers testing manifests before deployment.
+For developers testing manifests before deployment. The Playground Backend calls **Spark Runner** (Pedregal Graph), which handles all interactions with Spark Gateway and SK8.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    DCP PLAYGROUND CONNECTION                     │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   ┌─────────────────────────────────────────────────────────┐   │
-│   │                  DCP Playground UI                       │   │
-│   │                                                         │   │
-│   │   ┌───────────────────────────────────────────────┐     │   │
-│   │   │  manifest.yaml editor                          │     │   │
-│   │   │                                               │     │   │
-│   │   │  apiVersion: dcp.pedregal.doordash.com/v1    │     │   │
-│   │   │  kind: SparkJob                               │     │   │
-│   │   │  metadata:                                    │     │   │
-│   │   │    name: my-feature-job                       │     │   │
-│   │   │  spec:                                        │     │   │
-│   │   │    engine:                                    │     │   │
-│   │   │      version: "3.5"                           │     │   │
-│   │   │    ...                                        │     │   │
-│   │   └───────────────────────────────────────────────┘     │   │
-│   │                                                         │   │
-│   │   [ Environment: local ▼ ]  [ Run ▶ ]  [ Stop ⏹ ]       │   │
-│   │                                                         │   │
-│   └──────────────────────────┬──────────────────────────────┘   │
-│                              │                                   │
-│                              │ 1. User clicks "Run"              │
-│                              │                                   │
-│                              ▼                                   │
-│   ┌─────────────────────────────────────────────────────────┐   │
-│   │                Playground Backend                        │   │
-│   │                                                         │   │
-│   │   def run_sandbox(manifest, environment, user):         │   │
-│   │       # Parse manifest                                  │   │
-│   │       job_spec = parse_manifest(manifest)               │   │
-│   │                                                         │   │
-│   │       # Create Spark Connect session                    │   │
-│   │       spark = create_session(                           │   │
-│   │           team=manifest.metadata.team,                  │   │
-│   │           environment=environment,                      │   │
-│   │           user=user                                     │   │
-│   │       )                                                 │   │
-│   │                                                         │   │
-│   │       # Execute job                                     │   │
-│   │       result = execute_coreetl(spark, job_spec)         │   │
-│   │                                                         │   │
-│   │       return result                                     │   │
-│   │                                                         │   │
-│   └──────────────────────────┬──────────────────────────────┘   │
-│                              │                                   │
-│                              │ 2. Connect via Spark Gateway      │
-│                              │                                   │
-│                              ▼                                   │
-│   ┌─────────────────────────────────────────────────────────┐   │
-│   │                  Spark Gateway                           │   │
-│   │                                                         │   │
-│   │   Route by headers:                                     │   │
-│   │   • x-doordash-team: feature-engineering                │   │
-│   │   • x-doordash-environment: local                       │   │
-│   │   • x-doordash-user: user@doordash.com                  │   │
-│   │                                                         │   │
-│   │   → Route to: sjns-playground-local-{user-hash}         │   │
-│   │                                                         │   │
-│   └──────────────────────────┬──────────────────────────────┘   │
-│                              │                                   │
-│                              │ 3. Proxy to hot cluster           │
-│                              │                                   │
-│                              ▼                                   │
-│   ┌─────────────────────────────────────────────────────────┐   │
-│   │           Hot Cluster (Pre-warmed)                       │   │
-│   │                                                         │   │
-│   │   Namespace: sjns-playground-local-abc123               │   │
-│   │   Catalog: pedregal-dev                                 │   │
-│   │   Data: Sample/filtered                                 │   │
-│   │                                                         │   │
-│   │   ┌─────────────────────────────────────────────────┐   │   │
-│   │   │  Driver Pod                                      │   │   │
-│   │   │  • Spark Connect Server (:15002)                │   │   │
-│   │   │  • CoreETL execution                            │   │   │
-│   │   │  • Results streamed back                        │   │   │
-│   │   └─────────────────────────────────────────────────┘   │   │
-│   │                                                         │   │
-│   └─────────────────────────────────────────────────────────┘   │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────────────┐
+│                         DCP PLAYGROUND ARCHITECTURE                                    │
+│                                                                                       │
+│   The correct flow: Playground → Spark Runner → Spark Gateway → SK8                   │
+│                                                                                       │
+├───────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                       │
+│   ┌───────────────────────────────────────────────────────────────────────────────┐   │
+│   │                          DCP Playground UI                                     │   │
+│   │                                                                               │   │
+│   │   ┌─────────────────────────────────────────────────────────────────────┐     │   │
+│   │   │  manifest.yaml editor                                                │     │   │
+│   │   │                                                                     │     │   │
+│   │   │  apiVersion: dcp.pedregal.doordash.com/v1                          │     │   │
+│   │   │  kind: SparkJob                                                     │     │   │
+│   │   │  metadata:                                                          │     │   │
+│   │   │    name: my-feature-job                                             │     │   │
+│   │   │    team: feature-engineering                                        │     │   │
+│   │   │  spec:                                                              │     │   │
+│   │   │    engine: { version: "3.5" }                                       │     │   │
+│   │   │    coreEtl: { ... }                                                 │     │   │
+│   │   └─────────────────────────────────────────────────────────────────────┘     │   │
+│   │                                                                               │   │
+│   │   [ Environment: local ▼ ]  [ Run ▶ ]  [ Stop ⏹ ]  [ Check Status 🔄 ]        │   │
+│   │                                                                               │   │
+│   └────────────────────────────────────┬──────────────────────────────────────────┘   │
+│                                        │                                               │
+│                                        │ 1. User clicks "Run"                          │
+│                                        │    POST /api/v1/playground/run                │
+│                                        │                                               │
+│                                        ▼                                               │
+│   ┌───────────────────────────────────────────────────────────────────────────────┐   │
+│   │                        Playground Backend (Python)                             │   │
+│   │                                                                               │   │
+│   │   @app.route("/api/v1/playground/run")                                        │   │
+│   │   def run_playground():                                                       │   │
+│   │       # Call Spark Runner graph via gRPC                                      │   │
+│   │       response = spark_runner_client.Submit(                                  │   │
+│   │           manifest=request.json["manifest"],                                  │   │
+│   │           team=request.json["team"],                                          │   │
+│   │           environment=request.json["environment"],                            │   │
+│   │           user=current_user.email                                             │   │
+│   │       )                                                                       │   │
+│   │       return {"job_id": response.job_id}                                      │   │
+│   │                                                                               │   │
+│   └────────────────────────────────────┬──────────────────────────────────────────┘   │
+│                                        │                                               │
+│                                        │ 2. gRPC call to Spark Runner                  │
+│                                        │    SparkRunner.Submit(manifest, team, env)    │
+│                                        │                                               │
+│                                        ▼                                               │
+│   ┌───────────────────────────────────────────────────────────────────────────────┐   │
+│   │                      SPARK RUNNER (Pedregal Graph)                             │   │
+│   │                                                                               │   │
+│   │   Stateless graph with three primitives:                                      │   │
+│   │   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                       │   │
+│   │   │   Submit    │    │    Check    │    │   Cancel    │                       │   │
+│   │   │             │    │             │    │             │                       │   │
+│   │   │ • Parse     │    │ • Poll job  │    │ • Stop job  │                       │   │
+│   │   │   manifest  │    │   status    │    │ • Cleanup   │                       │   │
+│   │   │ • Validate  │    │ • Get logs  │    │   resources │                       │   │
+│   │   │ • Call GW   │    │ • Get UI    │    │             │                       │   │
+│   │   └──────┬──────┘    └─────────────┘    └─────────────┘                       │   │
+│   │          │                                                                     │   │
+│   │          │ 3. Spark Runner calls Spark Gateway                                 │   │
+│   │          │    with proper auth + routing context                               │   │
+│   │          │                                                                     │   │
+│   └──────────┼─────────────────────────────────────────────────────────────────────┘   │
+│              │                                                                         │
+│              ▼                                                                         │
+│   ┌───────────────────────────────────────────────────────────────────────────────┐   │
+│   │                        SPARK GATEWAY (Go Service)                              │   │
+│   │                                                                               │   │
+│   │   Receives request from Spark Runner (NOT directly from Playground):          │   │
+│   │                                                                               │   │
+│   │   • Team: feature-engineering (from Spark Runner context)                     │   │
+│   │   • Environment: local                                                        │   │
+│   │   • User: user@doordash.com                                                   │   │
+│   │   • Job manifest: CoreETL spec                                                │   │
+│   │                                                                               │   │
+│   │   Actions:                                                                    │   │
+│   │   1. Authenticate request (service-to-service via mTLS)                       │   │
+│   │   2. Determine target namespace: sjns-playground-local-{user-hash}            │   │
+│   │   3. Get/create SparkApplication via Spark Operator                           │   │
+│   │   4. Return job handle to Spark Runner                                        │   │
+│   │                                                                               │   │
+│   └────────────────────────────────────┬──────────────────────────────────────────┘   │
+│                                        │                                               │
+│                                        │ 4. Creates SparkApplication CRD               │
+│                                        │                                               │
+│                                        ▼                                               │
+│   ┌───────────────────────────────────────────────────────────────────────────────┐   │
+│   │                      SK8 CLUSTER (Kubernetes)                                  │   │
+│   │                                                                               │   │
+│   │   Namespace: sjns-playground-local-abc123                                     │   │
+│   │   Catalog: pedregal-dev (sample data only)                                    │   │
+│   │                                                                               │   │
+│   │   ┌─────────────────────────────────────────────────────────────────────┐     │   │
+│   │   │  SparkApplication: playground-job-xyz789                             │     │   │
+│   │   │                                                                     │     │   │
+│   │   │  ┌─────────────────┐    ┌─────────────────┐   ┌─────────────────┐  │     │   │
+│   │   │  │   Driver Pod    │    │  Executor Pod 1 │   │  Executor Pod 2 │  │     │   │
+│   │   │  │                 │    │                 │   │                 │  │     │   │
+│   │   │  │ • CoreETL       │◄──▶│ • Process data  │   │ • Process data  │  │     │   │
+│   │   │  │ • Spark Connect │    │ • Shuffle       │   │ • Shuffle       │  │     │   │
+│   │   │  │   (:15002)      │    └─────────────────┘   └─────────────────┘  │     │   │
+│   │   │  │ • Spark UI      │                                               │     │   │
+│   │   │  │   (:4040)       │                                               │     │   │
+│   │   │  └─────────────────┘                                               │     │   │
+│   │   │                                                                     │     │   │
+│   │   └─────────────────────────────────────────────────────────────────────┘     │   │
+│   │                                                                               │   │
+│   └───────────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                       │
+└───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Playground Backend Code:**
+**Key Point: Spark Runner is the Interface**
+
+The Playground Backend does NOT directly create Spark sessions or call Spark Gateway. Instead:
+- **Playground Backend** → calls **Spark Runner** (Submit/Check/Cancel)
+- **Spark Runner** → calls **Spark Gateway** (job orchestration)
+- **Spark Gateway** → creates **SparkApplication** in SK8
+
+---
+
+**Playground Backend Code (Calls Spark Runner):**
 
 ```python
-# dcp_playground/sandbox.py
-from pyspark.sql import SparkSession
+# dcp_playground/backend.py
+from dataclasses import dataclass
 from typing import Optional
+import grpc
 import yaml
 
+# Generated from spark_runner.proto
+from spark_runner_pb2 import SubmitRequest, CheckRequest, CancelRequest
+from spark_runner_pb2_grpc import SparkRunnerServiceStub
 
-class PlaygroundSandbox:
+
+@dataclass
+class JobStatus:
+    job_id: str
+    state: str  # PENDING, RUNNING, COMPLETED, FAILED, CANCELLED
+    spark_ui_url: Optional[str]
+    logs: Optional[str]
+    error: Optional[str]
+
+
+class PlaygroundBackend:
     """
-    Executes DCP manifests in sandbox environment.
+    DCP Playground Backend - interfaces with Spark Runner for job execution.
+
+    Architecture:
+        Playground UI → Playground Backend → Spark Runner → Spark Gateway → SK8
     """
 
-    GATEWAY_ENDPOINTS = {
-        "local": "spark-gateway-dev.doordash.team:15002",
-        "test": "spark-gateway-test.doordash.team:15002",
-        "staging": "spark-gateway-staging.doordash.team:15002",
-        "prod": "spark-gateway.doordash.team:15002",
+    SPARK_RUNNER_ENDPOINTS = {
+        "local": "spark-runner-dev.pedregal.svc.cluster.local:50051",
+        "test": "spark-runner-test.pedregal.svc.cluster.local:50051",
+        "staging": "spark-runner-staging.pedregal.svc.cluster.local:50051",
+        "prod": "spark-runner.pedregal.svc.cluster.local:50051",
     }
 
-    def __init__(self, user_id: str, team: str):
-        self.user_id = user_id
-        self.team = team
-        self._spark: Optional[SparkSession] = None
+    def __init__(self):
+        self._channels = {}
+        self._stubs = {}
 
-    def run(self, manifest_yaml: str, environment: str = "local") -> dict:
+    def _get_stub(self, environment: str) -> SparkRunnerServiceStub:
+        """Get or create gRPC stub for Spark Runner."""
+        if environment not in self._stubs:
+            endpoint = self.SPARK_RUNNER_ENDPOINTS[environment]
+            channel = grpc.insecure_channel(endpoint)
+            self._channels[environment] = channel
+            self._stubs[environment] = SparkRunnerServiceStub(channel)
+        return self._stubs[environment]
+
+    def submit_job(
+        self,
+        manifest_yaml: str,
+        team: str,
+        environment: str,
+        user: str,
+    ) -> str:
         """
-        Execute a manifest in the specified environment.
+        Submit a job via Spark Runner.
 
         Args:
-            manifest_yaml: Raw YAML string of DCP manifest
+            manifest_yaml: DCP manifest YAML
+            team: Team name for namespace routing
             environment: local, test, staging, or prod
+            user: User email for audit
 
         Returns:
-            Execution result with status, logs, and output
+            job_id: Unique identifier for tracking
         """
-        # Parse manifest
+        stub = self._get_stub(environment)
+
+        # Parse manifest to extract job config
         manifest = yaml.safe_load(manifest_yaml)
 
-        # Create Spark session
-        spark = self._create_session(environment)
+        request = SubmitRequest(
+            manifest=manifest_yaml,
+            team=team,
+            environment=environment,
+            user=user,
+            job_name=manifest.get("metadata", {}).get("name", "playground-job"),
+            # Playground-specific options
+            options={
+                "sandbox_mode": "true",  # Read-only, no writes
+                "data_sampling": "true",  # Use sampled data in local/test
+                "ttl_seconds": "3600",    # 1 hour max lifetime
+            },
+        )
 
-        try:
-            # Execute based on job type
-            if "coreEtl" in manifest.get("spec", {}):
-                result = self._execute_coreetl(spark, manifest)
-            else:
-                result = self._execute_sql(spark, manifest)
+        response = stub.Submit(request)
+        return response.job_id
 
-            return {
-                "status": "SUCCESS",
-                "result": result,
-                "spark_ui": self._get_spark_ui_url(),
-            }
+    def check_job(self, job_id: str, environment: str) -> JobStatus:
+        """
+        Check job status via Spark Runner.
 
-        except Exception as e:
-            return {
-                "status": "FAILED",
-                "error": str(e),
-                "spark_ui": self._get_spark_ui_url(),
-            }
+        Args:
+            job_id: Job identifier from submit
+            environment: Environment where job is running
 
-        finally:
-            spark.stop()
+        Returns:
+            JobStatus with current state, UI URL, logs
+        """
+        stub = self._get_stub(environment)
 
-    def _create_session(self, environment: str) -> SparkSession:
-        """Create Spark Connect session through Spark Gateway."""
-        gateway = self.GATEWAY_ENDPOINTS[environment]
+        request = CheckRequest(
+            job_id=job_id,
+            include_logs=True,
+        )
 
-        self._spark = SparkSession.builder \
-            .remote(f"sc://{gateway}") \
-            .config("spark.connect.grpc.header.x-doordash-team", self.team) \
-            .config("spark.connect.grpc.header.x-doordash-environment", environment) \
-            .config("spark.connect.grpc.header.x-doordash-user", self.user_id) \
-            .appName(f"playground-{self.user_id}") \
-            .getOrCreate()
+        response = stub.Check(request)
 
-        return self._spark
+        return JobStatus(
+            job_id=response.job_id,
+            state=response.state,
+            spark_ui_url=response.spark_ui_url,
+            logs=response.logs if response.logs else None,
+            error=response.error if response.error else None,
+        )
 
-    def _execute_coreetl(self, spark: SparkSession, manifest: dict) -> dict:
-        """Execute CoreETL job spec."""
-        job_spec = manifest["spec"]["coreEtl"]["jobSpec"]
+    def cancel_job(self, job_id: str, environment: str) -> bool:
+        """
+        Cancel a running job via Spark Runner.
 
-        # Process sources
-        sources = {}
-        for source in job_spec.get("sources", []):
-            table = f"{source['catalog']}.{source['database']}.{source['table']}"
-            df = spark.table(table)
+        Args:
+            job_id: Job identifier to cancel
+            environment: Environment where job is running
 
-            if "filter" in source:
-                df = df.filter(source["filter"])
+        Returns:
+            True if cancellation was successful
+        """
+        stub = self._get_stub(environment)
 
-            sources[source["name"]] = df
-            df.createOrReplaceTempView(source["name"])
+        request = CancelRequest(job_id=job_id)
+        response = stub.Cancel(request)
 
-        # Execute transformations
-        for transform in job_spec.get("transformations", []):
-            if transform["type"] == "sql":
-                result = spark.sql(transform["query"])
-                result.createOrReplaceTempView(transform["name"])
+        return response.success
 
-        # Preview sink output (don't write in playground)
-        sink = job_spec.get("sinks", [{}])[0]
-        if sink:
-            final_df = spark.table(sink.get("name", transform["name"]))
-            return {
-                "preview": final_df.limit(100).toPandas().to_dict(),
-                "count": final_df.count(),
-                "schema": final_df.schema.json(),
-            }
+    def get_job_results(self, job_id: str, environment: str) -> dict:
+        """
+        Get job results after completion.
 
-        return {}
+        For playground, results are stored in a temporary location
+        and retrieved via Spark Runner.
+        """
+        stub = self._get_stub(environment)
 
-    def _execute_sql(self, spark: SparkSession, manifest: dict) -> dict:
-        """Execute raw SQL query."""
-        query = manifest.get("spec", {}).get("sql", "SELECT 1")
-        result = spark.sql(query)
+        request = CheckRequest(
+            job_id=job_id,
+            include_results=True,
+        )
+
+        response = stub.Check(request)
+
+        if response.state != "COMPLETED":
+            raise ValueError(f"Job not completed: {response.state}")
 
         return {
-            "preview": result.limit(100).toPandas().to_dict(),
-            "count": result.count(),
+            "preview": response.result_preview,  # First 100 rows as JSON
+            "count": response.result_count,
+            "schema": response.result_schema,
+            "output_path": response.output_path,
         }
 
-    def _get_spark_ui_url(self) -> Optional[str]:
-        """Get Spark UI URL for debugging."""
-        if self._spark:
-            return self._spark.sparkContext.uiWebUrl
-        return None
 
-
-# Usage in DCP Playground API
-from flask import Flask, request, jsonify
+# Flask API endpoints
+from flask import Flask, request, jsonify, g
+from functools import wraps
 
 app = Flask(__name__)
+backend = PlaygroundBackend()
 
 
-@app.route("/api/v1/playground/run", methods=["POST"])
-def run_playground():
-    """API endpoint for running manifests in playground."""
+def get_current_user():
+    """Get user from auth token."""
+    # In practice, extract from Okta JWT
+    return request.headers.get("X-User-Email", "anonymous@doordash.com")
+
+
+@app.route("/api/v1/playground/submit", methods=["POST"])
+def submit_job():
+    """
+    Submit a job to run in playground.
+
+    Request body:
+        {
+            "manifest": "apiVersion: ...",
+            "team": "feature-engineering",
+            "environment": "local"
+        }
+
+    Response:
+        {"job_id": "playground-abc123"}
+    """
     data = request.json
+    user = get_current_user()
 
-    sandbox = PlaygroundSandbox(
-        user_id=data["user_id"],
-        team=data["team"],
-    )
-
-    result = sandbox.run(
+    job_id = backend.submit_job(
         manifest_yaml=data["manifest"],
+        team=data["team"],
         environment=data.get("environment", "local"),
+        user=user,
     )
 
-    return jsonify(result)
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/v1/playground/status/<job_id>", methods=["GET"])
+def check_status(job_id: str):
+    """
+    Check job status.
+
+    Response:
+        {
+            "job_id": "playground-abc123",
+            "state": "RUNNING",
+            "spark_ui_url": "https://...",
+            "logs": "..."
+        }
+    """
+    environment = request.args.get("environment", "local")
+
+    status = backend.check_job(job_id, environment)
+
+    return jsonify({
+        "job_id": status.job_id,
+        "state": status.state,
+        "spark_ui_url": status.spark_ui_url,
+        "logs": status.logs,
+        "error": status.error,
+    })
+
+
+@app.route("/api/v1/playground/cancel/<job_id>", methods=["POST"])
+def cancel_job(job_id: str):
+    """Cancel a running job."""
+    environment = request.json.get("environment", "local")
+
+    success = backend.cancel_job(job_id, environment)
+
+    return jsonify({"success": success})
+
+
+@app.route("/api/v1/playground/results/<job_id>", methods=["GET"])
+def get_results(job_id: str):
+    """Get job results after completion."""
+    environment = request.args.get("environment", "local")
+
+    try:
+        results = backend.get_job_results(job_id, environment)
+        return jsonify(results)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 ```
+
+---
+
+**Spark Runner Service (Go - Pedregal Graph):**
+
+```go
+// spark-runner/runner.go
+package sparkrunner
+
+import (
+    "context"
+    "fmt"
+    "time"
+
+    "github.com/doordash/pedregal/pkg/gateway"
+    "github.com/doordash/pedregal/pkg/k8s"
+    pb "github.com/doordash/spark-runner/proto"
+    "go.uber.org/zap"
+    "google.golang.org/grpc"
+)
+
+// SparkRunner implements the Spark Runner Pedregal Graph
+// It provides Submit/Check/Cancel primitives for Spark jobs
+type SparkRunner struct {
+    pb.UnimplementedSparkRunnerServiceServer
+
+    logger         *zap.Logger
+    gatewayClient  gateway.SparkGatewayClient
+    k8sClient      k8s.Client
+    jobStore       JobStore  // Stores job metadata
+}
+
+// Submit creates a new Spark job
+func (r *SparkRunner) Submit(ctx context.Context, req *pb.SubmitRequest) (*pb.SubmitResponse, error) {
+    r.logger.Info("Submitting Spark job",
+        zap.String("team", req.Team),
+        zap.String("environment", req.Environment),
+        zap.String("user", req.User),
+        zap.String("job_name", req.JobName),
+    )
+
+    // Generate unique job ID
+    jobID := fmt.Sprintf("%s-%s-%d", req.Team, req.JobName, time.Now().UnixNano())
+
+    // Determine target namespace
+    namespace := r.resolveNamespace(req.Team, req.Environment, req.User)
+
+    // Build SparkApplication spec from manifest
+    sparkApp, err := r.buildSparkApplication(ctx, req, jobID, namespace)
+    if err != nil {
+        return nil, fmt.Errorf("failed to build SparkApplication: %w", err)
+    }
+
+    // Call Spark Gateway to create the job
+    // Gateway handles cluster selection, hot pools, etc.
+    createResp, err := r.gatewayClient.CreateSparkApplication(ctx, &gateway.CreateRequest{
+        Namespace:        namespace,
+        SparkApplication: sparkApp,
+        Team:             req.Team,
+        Environment:      req.Environment,
+        User:             req.User,
+    })
+    if err != nil {
+        return nil, fmt.Errorf("failed to create SparkApplication: %w", err)
+    }
+
+    // Store job metadata
+    job := &Job{
+        ID:          jobID,
+        Team:        req.Team,
+        Environment: req.Environment,
+        User:        req.User,
+        Namespace:   namespace,
+        State:       "PENDING",
+        CreatedAt:   time.Now(),
+        SparkAppName: createResp.ApplicationName,
+    }
+    r.jobStore.Save(ctx, job)
+
+    return &pb.SubmitResponse{
+        JobId:     jobID,
+        Namespace: namespace,
+    }, nil
+}
+
+// Check returns job status
+func (r *SparkRunner) Check(ctx context.Context, req *pb.CheckRequest) (*pb.CheckResponse, error) {
+    // Get job metadata
+    job, err := r.jobStore.Get(ctx, req.JobId)
+    if err != nil {
+        return nil, fmt.Errorf("job not found: %w", err)
+    }
+
+    // Query Spark Gateway for current status
+    statusResp, err := r.gatewayClient.GetSparkApplicationStatus(ctx, &gateway.StatusRequest{
+        Namespace:       job.Namespace,
+        ApplicationName: job.SparkAppName,
+    })
+    if err != nil {
+        return nil, fmt.Errorf("failed to get status: %w", err)
+    }
+
+    // Map Spark Operator state to our state
+    state := r.mapState(statusResp.State)
+
+    // Update stored state
+    job.State = state
+    r.jobStore.Save(ctx, job)
+
+    resp := &pb.CheckResponse{
+        JobId:       req.JobId,
+        State:       state,
+        SparkUiUrl:  statusResp.SparkUIURL,
+    }
+
+    // Include logs if requested
+    if req.IncludeLogs {
+        logs, _ := r.getDriverLogs(ctx, job.Namespace, job.SparkAppName)
+        resp.Logs = logs
+    }
+
+    // Include results if requested and job is complete
+    if req.IncludeResults && state == "COMPLETED" {
+        results, _ := r.getJobResults(ctx, job)
+        resp.ResultPreview = results.Preview
+        resp.ResultCount = results.Count
+        resp.ResultSchema = results.Schema
+    }
+
+    return resp, nil
+}
+
+// Cancel stops a running job
+func (r *SparkRunner) Cancel(ctx context.Context, req *pb.CancelRequest) (*pb.CancelResponse, error) {
+    job, err := r.jobStore.Get(ctx, req.JobId)
+    if err != nil {
+        return nil, fmt.Errorf("job not found: %w", err)
+    }
+
+    // Call Spark Gateway to delete the SparkApplication
+    _, err = r.gatewayClient.DeleteSparkApplication(ctx, &gateway.DeleteRequest{
+        Namespace:       job.Namespace,
+        ApplicationName: job.SparkAppName,
+    })
+    if err != nil {
+        return nil, fmt.Errorf("failed to cancel job: %w", err)
+    }
+
+    // Update state
+    job.State = "CANCELLED"
+    r.jobStore.Save(ctx, job)
+
+    return &pb.CancelResponse{Success: true}, nil
+}
+
+// resolveNamespace determines the K8s namespace for the job
+func (r *SparkRunner) resolveNamespace(team, environment, user string) string {
+    switch environment {
+    case "local":
+        // Per-user namespace for playground
+        return fmt.Sprintf("sjns-playground-local-%s", hashUser(user))
+    case "test":
+        return "sjns-playground-test"
+    case "staging":
+        return fmt.Sprintf("sjns-%s-staging", team)
+    case "prod":
+        return fmt.Sprintf("sjns-%s-prod", team)
+    default:
+        return fmt.Sprintf("sjns-%s-%s", team, environment)
+    }
+}
+
+// buildSparkApplication creates SparkApplication CRD spec from manifest
+func (r *SparkRunner) buildSparkApplication(
+    ctx context.Context,
+    req *pb.SubmitRequest,
+    jobID string,
+    namespace string,
+) (*k8s.SparkApplication, error) {
+
+    // Parse manifest to extract job configuration
+    manifest, err := parseManifest(req.Manifest)
+    if err != nil {
+        return nil, err
+    }
+
+    // Determine image based on environment
+    image := r.selectImage(req.Environment, manifest)
+
+    // Build SparkApplication
+    app := &k8s.SparkApplication{
+        ObjectMeta: k8s.ObjectMeta{
+            Name:      jobID,
+            Namespace: namespace,
+            Labels: map[string]string{
+                "team":        req.Team,
+                "environment": req.Environment,
+                "user":        req.User,
+                "job-type":    "playground",
+            },
+        },
+        Spec: k8s.SparkApplicationSpec{
+            Type:         "Python",
+            Mode:         "cluster",
+            Image:        image,
+            SparkVersion: manifest.Spec.Engine.Version,
+            MainFile:     "local:///opt/spark/work-dir/coreetl_runner.py",
+            Arguments:    []string{"--manifest", req.Manifest},
+
+            // Driver config
+            Driver: k8s.DriverSpec{
+                Cores:  2,
+                Memory: "4g",
+                Labels: map[string]string{
+                    "spark-role":    "driver",
+                    "spark-connect": "enabled",
+                },
+                ServiceAccount: "spark-driver",
+            },
+
+            // Executor config
+            Executor: k8s.ExecutorSpec{
+                Cores:     2,
+                Memory:    "4g",
+                Instances: 2,
+            },
+
+            // Spark configuration
+            SparkConf: map[string]string{
+                // Enable Spark Connect
+                "spark.plugins":                    "org.apache.spark.sql.connect.SparkConnectPlugin",
+                "spark.connect.grpc.binding.port":  "15002",
+
+                // Unity Catalog
+                "spark.sql.catalog.pedregal":     "io.unitycatalog.spark.UCSingleCatalog",
+                "spark.sql.catalog.pedregal.uri": r.getCatalogURI(req.Environment),
+
+                // DRA
+                "spark.dynamicAllocation.enabled": "true",
+                "spark.dynamicAllocation.minExecutors": "1",
+                "spark.dynamicAllocation.maxExecutors": "10",
+            },
+
+            // TTL for cleanup
+            TimeToLiveSeconds: r.getTTL(req.Options),
+        },
+    }
+
+    // Apply sandbox options
+    if req.Options["sandbox_mode"] == "true" {
+        app.Spec.SparkConf["spark.sql.readOnly"] = "true"
+    }
+
+    return app, nil
+}
+
+func (r *SparkRunner) mapState(sparkState string) string {
+    switch sparkState {
+    case "SUBMITTED", "PENDING_RERUN":
+        return "PENDING"
+    case "RUNNING", "SUCCEEDING":
+        return "RUNNING"
+    case "COMPLETED":
+        return "COMPLETED"
+    case "FAILED", "SUBMISSION_FAILED", "FAILING":
+        return "FAILED"
+    default:
+        return "UNKNOWN"
+    }
+}
+```
+
+---
+
+**Spark Runner Proto Definition:**
+
+```protobuf
+// spark-runner/proto/spark_runner.proto
+syntax = "proto3";
+
+package sparkrunner;
+
+option go_package = "github.com/doordash/spark-runner/proto";
+
+service SparkRunnerService {
+    // Submit a new Spark job
+    rpc Submit(SubmitRequest) returns (SubmitResponse);
+
+    // Check job status
+    rpc Check(CheckRequest) returns (CheckResponse);
+
+    // Cancel a running job
+    rpc Cancel(CancelRequest) returns (CancelResponse);
+}
+
+message SubmitRequest {
+    string manifest = 1;      // DCP manifest YAML
+    string team = 2;          // Team name
+    string environment = 3;   // local, test, staging, prod
+    string user = 4;          // User email
+    string job_name = 5;      // Job name from manifest
+    map<string, string> options = 6;  // Additional options
+}
+
+message SubmitResponse {
+    string job_id = 1;        // Unique job identifier
+    string namespace = 2;     // K8s namespace where job runs
+}
+
+message CheckRequest {
+    string job_id = 1;
+    bool include_logs = 2;    // Include driver logs
+    bool include_results = 3; // Include results if complete
+}
+
+message CheckResponse {
+    string job_id = 1;
+    string state = 2;         // PENDING, RUNNING, COMPLETED, FAILED, CANCELLED
+    string spark_ui_url = 3;  // URL to Spark UI
+    string logs = 4;          // Driver logs (if requested)
+    string error = 5;         // Error message (if failed)
+
+    // Results (if requested and complete)
+    string result_preview = 6; // First 100 rows as JSON
+    int64 result_count = 7;    // Total row count
+    string result_schema = 8;  // Schema as JSON
+    string output_path = 9;    // S3 path to full results
+}
+
+message CancelRequest {
+    string job_id = 1;
+}
+
+message CancelResponse {
+    bool success = 1;
+}
+```
+
+---
+
+**Summary: Correct DCP Flow**
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────┐
+│                        CORRECT DCP PLAYGROUND FLOW                                  │
+├────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                    │
+│   1. USER                                                                          │
+│      │                                                                             │
+│      │  Writes manifest.yaml in DCP Playground UI                                  │
+│      │  Clicks "Run"                                                               │
+│      │                                                                             │
+│      ▼                                                                             │
+│   2. PLAYGROUND BACKEND                                                            │
+│      │                                                                             │
+│      │  • Receives manifest + team + environment                                   │
+│      │  • Does NOT create Spark sessions directly                                  │
+│      │  • Calls Spark Runner via gRPC                                              │
+│      │                                                                             │
+│      ▼                                                                             │
+│   3. SPARK RUNNER (Pedregal Graph)                                                 │
+│      │                                                                             │
+│      │  Submit:                                                                    │
+│      │  • Generates job ID                                                         │
+│      │  • Resolves namespace from team/env/user                                    │
+│      │  • Builds SparkApplication CRD                                              │
+│      │  • Calls Spark Gateway                                                      │
+│      │                                                                             │
+│      │  Check:                                                                     │
+│      │  • Queries job status from Spark Gateway                                    │
+│      │  • Returns state, Spark UI URL, logs                                        │
+│      │                                                                             │
+│      │  Cancel:                                                                    │
+│      │  • Deletes SparkApplication via Spark Gateway                               │
+│      │                                                                             │
+│      ▼                                                                             │
+│   4. SPARK GATEWAY                                                                 │
+│      │                                                                             │
+│      │  • Authenticates Spark Runner (service-to-service)                          │
+│      │  • Selects target cluster (hot pool or create new)                          │
+│      │  • Creates/manages SparkApplication CRDs                                    │
+│      │  • Proxies Spark Connect for interactive patterns                           │
+│      │                                                                             │
+│      ▼                                                                             │
+│   5. SK8 (Kubernetes Cluster)                                                      │
+│      │                                                                             │
+│      │  • Spark Operator watches SparkApplication CRDs                             │
+│      │  • Creates Driver + Executor pods                                           │
+│      │  • Driver runs CoreETL job                                                  │
+│      │  • Results written to temp S3 location                                      │
+│      │                                                                             │
+│      ▼                                                                             │
+│   6. RESULTS                                                                       │
+│                                                                                    │
+│      Spark Runner retrieves results → Playground Backend → User                    │
+│                                                                                    │
+└────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Key Distinction: Batch vs Interactive**
+
+| Pattern | Flow | Use Case |
+|---------|------|----------|
+| **Batch (DCP Playground)** | Playground → Spark Runner → Gateway → SK8 | Running DCP manifests |
+| **Interactive (Jupyter/API)** | Client → Spark Connect → Gateway → Driver | Ad-hoc queries |
+
+For DCP Playground, jobs are **batch jobs** managed by Spark Runner.
+For Jupyter notebooks, connections are **interactive sessions** via Spark Connect directly.
 
 ---
 
