@@ -167,15 +167,26 @@ public class SparkConnectApiClient {
 
 ---
 
-### Pattern 2: DCP Playground (Batch Jobs via Spark Runner)
+### Pattern 2: DCP Playground (Batch Jobs - NO Spark Connect Needed)
 
-For developers testing manifests before deployment. The Playground Backend calls **Spark Runner** (Pedregal Graph), which handles all interactions with Spark Gateway and SK8.
+For developers testing manifests before deployment. **This pattern does NOT use Spark Connect** - it's a pure batch job submission flow.
+
+**Why no Spark Connect for DCP Playground?**
+- User submits a **complete manifest** (CoreETL spec) - not ad-hoc queries
+- Job runs to completion as a SparkApplication CRD
+- Results are written to S3 (or temp location for preview)
+- User polls for status via Spark Runner, retrieves results when done
+- No interactive session, no streaming results, no client-side DataFrame operations
+
+**Spark Connect is only for interactive patterns** (Jupyter, API clients) where users need real-time query execution.
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────────────────┐
-│                         DCP PLAYGROUND ARCHITECTURE                                    │
+│                    DCP PLAYGROUND ARCHITECTURE (BATCH - NO SPARK CONNECT)              │
 │                                                                                       │
-│   The correct flow: Playground → Spark Runner → Spark Gateway → SK8                   │
+│   Flow: Playground → Spark Runner → Spark Gateway → SparkApplication CRD              │
+│                                                                                       │
+│   NOTE: Spark Connect is NOT used here. This is batch job submission.                 │
 │                                                                                       │
 ├───────────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                       │
@@ -951,15 +962,26 @@ message CancelResponse {
 └────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Key Distinction: Batch vs Interactive**
+**Key Distinction: Batch vs Interactive (When is Spark Connect needed?)**
 
-| Pattern | Flow | Use Case |
-|---------|------|----------|
-| **Batch (DCP Playground)** | Playground → Spark Runner → Gateway → SK8 | Running DCP manifests |
-| **Interactive (Jupyter/API)** | Client → Spark Connect → Gateway → Driver | Ad-hoc queries |
+| Pattern | Spark Connect? | Flow | Use Case |
+|---------|---------------|------|----------|
+| **DCP Playground** | **NO** | Manifest → Runner → Gateway → SparkApplication CRD | Complete job specs, results in S3 |
+| **Jupyter Notebook** | **YES** | Client → Spark Connect → Gateway → Driver | Ad-hoc SQL, DataFrame ops |
+| **Direct API** | **YES** | Service → Spark Connect → Gateway → Driver | Programmatic queries |
+| **CI/CD Tests** | **YES** | Test → Spark Connect → Gateway → Driver | Integration testing |
 
-For DCP Playground, jobs are **batch jobs** managed by Spark Runner.
-For Jupyter notebooks, connections are **interactive sessions** via Spark Connect directly.
+**When to use Spark Connect:**
+- Interactive sessions where you run arbitrary queries
+- Need streaming results back to client
+- Client-side DataFrame operations (`.filter()`, `.groupBy()`, etc.)
+- Long-running sessions with multiple queries
+
+**When NOT to use Spark Connect (use batch instead):**
+- Complete job manifests (CoreETL, SQL files)
+- Fire-and-forget execution
+- Results written to S3/table (not streamed to client)
+- DCP Playground, scheduled jobs, production pipelines
 
 ---
 
