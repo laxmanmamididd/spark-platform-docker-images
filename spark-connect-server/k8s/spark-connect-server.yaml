@@ -1,0 +1,213 @@
+# ============================================================================
+# SparkApplication CRD for Spark Connect Server
+# ============================================================================
+# This YAML is used by the Spark Kubernetes Operator to deploy a long-running
+# Spark Connect Server that accepts gRPC connections from Spark Gateway
+#
+# Deploy: kubectl apply -f spark-connect-server.yaml
+# ============================================================================
+
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: spark-connect-server
+  namespace: sjns-feature-eng-prod  # Domain namespace for team
+  labels:
+    app: spark-connect-server
+    team: feature-engineering
+    environment: prod
+spec:
+  type: Scala
+  mode: cluster
+
+  # DoorDash Spark Platform image with Spark Connect + Unity Catalog
+  image: "doordash-docker.jfrog.io/spark-platform/3.5-oss:latest"
+  imagePullPolicy: Always
+
+  # Main class for Spark Connect Server
+  mainClass: org.apache.spark.sql.connect.service.SparkConnectServer
+
+  sparkVersion: "3.5.3"
+
+  # ============================================================================
+  # SPARK CONFIGURATION
+  # ============================================================================
+  sparkConf:
+    # Spark Connect enabled
+    spark.plugins: "org.apache.spark.sql.connect.SparkConnectPlugin"
+    spark.connect.grpc.binding.port: "15002"
+
+    # Unity Catalog
+    spark.sql.catalog.datalake: "io.unitycatalog.spark.UCSingleCatalog"
+    spark.sql.catalog.datalake.uri: "http://unity-catalog.doordash.team:8080"
+    spark.sql.defaultCatalog: "datalake"
+
+    # SQL Extensions
+    spark.sql.extensions: "io.delta.sql.DeltaSparkSessionExtension,org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
+
+    # AWS S3
+    spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
+
+    # Performance
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.serializer: "org.apache.spark.serializer.KryoSerializer"
+
+    # Dynamic allocation for executors
+    spark.dynamicAllocation.enabled: "true"
+    spark.dynamicAllocation.minExecutors: "1"
+    spark.dynamicAllocation.maxExecutors: "10"
+    spark.dynamicAllocation.executorIdleTimeout: "60s"
+
+  # ============================================================================
+  # DRIVER CONFIGURATION
+  # ============================================================================
+  driver:
+    cores: 2
+    coreLimit: "2000m"
+    memory: "4g"
+    memoryOverhead: "1g"
+
+    labels:
+      app: spark-connect-server
+      component: driver
+      team: feature-engineering
+
+    # Service account for AWS IRSA
+    serviceAccount: spark-connect-sa
+
+    # Environment variables
+    env:
+      - name: SPARK_MODE
+        value: "connect"
+      - name: AWS_REGION
+        value: "us-west-2"
+      - name: UNITY_CATALOG_URI
+        value: "http://unity-catalog.doordash.team:8080"
+
+    # Volume mounts
+    volumeMounts:
+      - name: spark-conf
+        mountPath: /opt/spark/conf
+      - name: tmp
+        mountPath: /tmp
+
+    # Pod security context
+    securityContext:
+      runAsUser: 185
+      runAsGroup: 185
+      fsGroup: 185
+
+  # ============================================================================
+  # EXECUTOR CONFIGURATION
+  # ============================================================================
+  executor:
+    cores: 2
+    coreLimit: "2000m"
+    memory: "4g"
+    memoryOverhead: "1g"
+    instances: 2  # Initial instances (dynamic allocation will scale)
+
+    labels:
+      app: spark-connect-server
+      component: executor
+      team: feature-engineering
+
+    # Environment variables
+    env:
+      - name: AWS_REGION
+        value: "us-west-2"
+
+    # Volume mounts
+    volumeMounts:
+      - name: tmp
+        mountPath: /tmp
+
+  # ============================================================================
+  # VOLUMES
+  # ============================================================================
+  volumes:
+    - name: spark-conf
+      configMap:
+        name: spark-connect-config
+    - name: tmp
+      emptyDir: {}
+
+  # ============================================================================
+  # RESTART POLICY - Keep running (long-lived server)
+  # ============================================================================
+  restartPolicy:
+    type: Always
+    onFailureRetries: 3
+    onFailureRetryInterval: 30
+    onSubmissionFailureRetries: 5
+    onSubmissionFailureRetryInterval: 60
+
+---
+# ============================================================================
+# SERVICE - Expose Spark Connect gRPC port
+# ============================================================================
+# This Service is what Spark Gateway routes to
+# ============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: spark-connect-server
+  namespace: sjns-feature-eng-prod
+  labels:
+    app: spark-connect-server
+spec:
+  type: ClusterIP
+  ports:
+    - name: grpc
+      port: 15002
+      targetPort: 15002
+      protocol: TCP
+    - name: spark-ui
+      port: 4040
+      targetPort: 4040
+      protocol: TCP
+  selector:
+    app: spark-connect-server
+    component: driver
+
+---
+# ============================================================================
+# CONFIGMAP - Spark Configuration
+# ============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spark-connect-config
+  namespace: sjns-feature-eng-prod
+data:
+  spark-defaults.conf: |
+    # Spark Connect
+    spark.plugins=org.apache.spark.sql.connect.SparkConnectPlugin
+    spark.connect.grpc.binding.port=15002
+
+    # Unity Catalog
+    spark.sql.catalog.datalake=io.unitycatalog.spark.UCSingleCatalog
+    spark.sql.catalog.datalake.uri=http://unity-catalog.doordash.team:8080
+    spark.sql.defaultCatalog=datalake
+
+    # Performance
+    spark.sql.adaptive.enabled=true
+    spark.serializer=org.apache.spark.serializer.KryoSerializer
+
+---
+# ============================================================================
+# SERVICE ACCOUNT - For AWS IRSA
+# ============================================================================
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spark-connect-sa
+  namespace: sjns-feature-eng-prod
+  annotations:
+    # AWS IRSA annotation - allows pods to assume IAM role
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/spark-connect-feature-eng
