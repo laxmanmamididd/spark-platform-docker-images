@@ -1,0 +1,7 @@
+# Spark Connect Client Requirements
+# Install with: pip install -r requirements.txt
+
+pyspark[connect]==3.5.3
+grpcio>=1.48.0
+grpcio-status>=1.48.0
+pyarrow>=12.0.0

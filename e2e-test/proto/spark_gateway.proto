@@ -1,0 +1,332 @@
+syntax = "proto3";
+
+package spark_gateway.v1;
+
+option go_package = "github.com/doordash/pedregal/protos/spark_gateway/v1";
+option java_package = "com.doordash.spark.gateway.v1";
+option java_multiple_files = true;
+
+// SparkGateway service provides APIs for submitting and managing Spark jobs
+// This is the entry point for all Spark workloads in the Pedregal platform
+service SparkGateway {
+    // SubmitSparkJob submits a new Spark application to the cluster
+    // Returns the job ID and initial status
+    rpc SubmitSparkJob(SubmitSparkJobRequest) returns (SubmitSparkJobResponse);
+
+    // GetJobStatus retrieves the current status of a submitted job
+    rpc GetJobStatus(GetJobStatusRequest) returns (GetJobStatusResponse);
+
+    // CancelJob cancels a running or pending job
+    rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+
+    // ListJobs lists jobs for a namespace
+    rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+
+    // GetJobLogs retrieves logs for a job
+    rpc GetJobLogs(GetJobLogsRequest) returns (GetJobLogsResponse);
+}
+
+// SubmitSparkJobRequest is the request message for job submission
+message SubmitSparkJobRequest {
+    // Name of the Spark application
+    string application_name = 1;
+
+    // Kubernetes namespace where the job will run
+    string namespace = 2;
+
+    // Python files for PySpark applications
+    repeated string py_files = 3;
+
+    // JAR files for Scala/Java applications
+    repeated string jars = 4;
+
+    // Main class for Java/Scala applications
+    string main_class = 5;
+
+    // Application arguments
+    repeated string app_args = 6;
+
+    // Docker image to use
+    string image = 7;
+
+    // Image pull policy (Always, IfNotPresent, Never)
+    string image_pull_policy = 8;
+
+    // Application type: Python, Scala, Java, R
+    string spark_application_type = 9;
+
+    // Spark configuration overrides
+    map<string, string> spark_conf = 10;
+
+    // Driver pod specification
+    DriverSpec driver = 11;
+
+    // Executor pod specification
+    ExecutorSpec executor = 12;
+
+    // Runtime version specifications
+    RuntimeVersions runtime_versions = 13;
+
+    // Application lifecycle tolerations
+    ApplicationTolerations application_tolerations = 14;
+
+    // Owner team for the job (for billing/monitoring)
+    string owner_team = 15;
+
+    // Environment (dev, staging, prod)
+    string environment = 16;
+}
+
+// DriverSpec defines the driver pod configuration
+message DriverSpec {
+    // Number of CPU cores (e.g., "1", "2")
+    string cores = 1;
+
+    // Memory allocation (e.g., "512m", "2g")
+    string memory = 2;
+
+    // Service account for the driver pod
+    string service_account = 3;
+
+    // Labels to apply to the driver pod
+    map<string, string> labels = 4;
+
+    // Annotations to apply to the driver pod
+    map<string, string> annotations = 5;
+
+    // Environment variables
+    map<string, string> env = 6;
+}
+
+// ExecutorSpec defines the executor pod configuration
+message ExecutorSpec {
+    // Number of executor instances
+    int32 instances = 1;
+
+    // Number of CPU cores per executor
+    string cores = 2;
+
+    // Memory allocation per executor
+    string memory = 3;
+
+    // Labels to apply to executor pods
+    map<string, string> labels = 4;
+
+    // Annotations to apply to executor pods
+    map<string, string> annotations = 5;
+
+    // Environment variables for executors
+    map<string, string> env = 6;
+}
+
+// RuntimeVersions specifies the versions to use
+message RuntimeVersions {
+    // Spark version (e.g., "3.5.0", "4.0.0")
+    string spark_version = 1;
+
+    // Python version (e.g., "3.10", "3.11")
+    string python_version = 2;
+
+    // Java version (e.g., "11", "17")
+    string java_version = 3;
+}
+
+// ApplicationTolerations defines job lifecycle behavior
+message ApplicationTolerations {
+    // Resource retention policy: OnFailure, Always, Never
+    string resource_retain_policy = 1;
+
+    // TTL after job stops (milliseconds)
+    int64 ttl_after_stop_millis = 2;
+
+    // Maximum retries for failed jobs
+    int32 max_retries = 3;
+
+    // Restart policy: OnFailure, Always, Never
+    string restart_policy = 4;
+}
+
+// SubmitSparkJobResponse is the response after job submission
+message SubmitSparkJobResponse {
+    // Unique job ID assigned by the gateway
+    string job_id = 1;
+
+    // Application name
+    string application_name = 2;
+
+    // Current job status
+    JobStatus status = 3;
+
+    // URL to Spark UI (once available)
+    string spark_ui_url = 4;
+
+    // URL to job logs
+    string log_url = 5;
+
+    // Submission timestamp
+    int64 submitted_at = 6;
+}
+
+// GetJobStatusRequest is the request for job status
+message GetJobStatusRequest {
+    // Job ID to query
+    string job_id = 1;
+
+    // Include detailed status information
+    bool include_details = 2;
+}
+
+// GetJobStatusResponse contains job status information
+message GetJobStatusResponse {
+    // Job ID
+    string job_id = 1;
+
+    // Current status
+    JobStatus status = 2;
+
+    // Status message
+    string message = 3;
+
+    // Spark UI URL
+    string spark_ui_url = 4;
+
+    // Log URL
+    string log_url = 5;
+
+    // Timestamps
+    int64 submitted_at = 6;
+    int64 started_at = 7;
+    int64 completed_at = 8;
+
+    // Execution metrics (if available)
+    JobMetrics metrics = 9;
+}
+
+// JobStatus enum defines possible job states
+enum JobStatus {
+    JOB_STATUS_UNSPECIFIED = 0;
+    JOB_STATUS_PENDING = 1;
+    JOB_STATUS_SUBMITTED = 2;
+    JOB_STATUS_RUNNING = 3;
+    JOB_STATUS_SUCCEEDED = 4;
+    JOB_STATUS_FAILED = 5;
+    JOB_STATUS_CANCELLED = 6;
+    JOB_STATUS_TIMEOUT = 7;
+}
+
+// JobMetrics contains execution metrics
+message JobMetrics {
+    // Duration in milliseconds
+    int64 duration_ms = 1;
+
+    // Number of stages
+    int32 num_stages = 2;
+
+    // Number of tasks
+    int32 num_tasks = 3;
+
+    // Bytes read
+    int64 bytes_read = 4;
+
+    // Bytes written
+    int64 bytes_written = 5;
+
+    // Records read
+    int64 records_read = 6;
+
+    // Records written
+    int64 records_written = 7;
+}
+
+// CancelJobRequest is the request to cancel a job
+message CancelJobRequest {
+    // Job ID to cancel
+    string job_id = 1;
+
+    // Force kill (don't wait for graceful shutdown)
+    bool force = 2;
+}
+
+// CancelJobResponse is the response after cancellation
+message CancelJobResponse {
+    // Job ID
+    string job_id = 1;
+
+    // Whether cancellation was successful
+    bool success = 2;
+
+    // Message
+    string message = 3;
+}
+
+// ListJobsRequest is the request to list jobs
+message ListJobsRequest {
+    // Namespace to filter by
+    string namespace = 1;
+
+    // Owner team to filter by
+    string owner_team = 2;
+
+    // Status filter
+    repeated JobStatus status_filter = 3;
+
+    // Maximum number of results
+    int32 limit = 4;
+
+    // Pagination offset
+    int32 offset = 5;
+}
+
+// ListJobsResponse contains a list of jobs
+message ListJobsResponse {
+    // List of jobs
+    repeated JobSummary jobs = 1;
+
+    // Total count
+    int32 total_count = 2;
+}
+
+// JobSummary is a summary of a job
+message JobSummary {
+    // Job ID
+    string job_id = 1;
+
+    // Application name
+    string application_name = 2;
+
+    // Namespace
+    string namespace = 3;
+
+    // Status
+    JobStatus status = 4;
+
+    // Submitted timestamp
+    int64 submitted_at = 5;
+
+    // Owner team
+    string owner_team = 6;
+}
+
+// GetJobLogsRequest is the request to get job logs
+message GetJobLogsRequest {
+    // Job ID
+    string job_id = 1;
+
+    // Container to get logs from: driver, executor
+    string container = 2;
+
+    // Number of lines to return
+    int32 tail_lines = 3;
+
+    // Follow logs (streaming)
+    bool follow = 4;
+}
+
+// GetJobLogsResponse contains job logs
+message GetJobLogsResponse {
+    // Job ID
+    string job_id = 1;
+
+    // Log lines
+    repeated string lines = 2;
+}

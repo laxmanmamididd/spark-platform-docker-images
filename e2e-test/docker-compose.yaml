@@ -1,0 +1,38 @@
+services:
+  # Spark Connect Server - runs Spark with Connect enabled
+  spark-connect-server:
+    image: apache/spark:3.5.3
+    container_name: spark-connect-server
+    user: root
+    command: ["bash", "-c", "mkdir -p /home/spark/.ivy2/cache /home/spark/.ivy2/jars && chown -R spark:spark /home/spark/.ivy2 && /opt/spark/sbin/start-connect-server.sh --conf spark.connect.grpc.binding.port=15002 --conf spark.driver.host=spark-connect-server --conf spark.driver.bindAddress=0.0.0.0 --packages org.apache.spark:spark-connect_2.12:3.5.3"]
+    ports:
+      - "15002:15002"    # Spark Connect gRPC
+      - "4040:4040"      # Spark UI
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+    volumes:
+      - ivy-cache:/home/spark/.ivy2
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/15002"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Alternative: Use spark-shell with Connect for interactive testing
+  spark-shell:
+    image: apache/spark:3.5.3
+    container_name: spark-shell
+    profiles:
+      - interactive
+    command: /opt/spark/bin/spark-shell --conf spark.connect.enabled=true
+    stdin_open: true
+    tty: true
+    depends_on:
+      - spark-connect-server
+
+networks:
+  default:
+    name: spark-network
+
+volumes:
+  ivy-cache:
